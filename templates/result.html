@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Processing Result</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+  <main class="page">
+    <section class="card">
+      <h1>Processing Complete</h1>
+
+      <div class="summary">
+        <div><strong>Total bills:</strong> {{ result.bills_processed }}</div>
+        <div><strong>Values updated:</strong> {{ result.bills_updated }}</div>
+        <div><strong>Rows updated:</strong> {{ result.rows_updated }}</div>
+        <div><strong>Review rows:</strong> {{ result.bills_review }}</div>
+        <div><strong>Parse failures:</strong> {{ result.parse_failures }}</div>
+        <div><strong>No match:</strong> {{ result.no_match }}</div>
+        <div><strong>Multiple match:</strong> {{ result.multi_match }}</div>
+        <div><strong>Row/type conflicts:</strong> {{ result.row_conflicts }}</div>
+      </div>
+
+      <p>
+        Updated sheet: <a href="{{ result.sheet_reference }}" target="_blank" rel="noopener">{{ result.sheet_reference }}</a>
+        (worksheet: <strong>{{ result.sheet_title }}</strong>)
+      </p>
+
+      <div class="downloads">
+        <a href="{{ url_for('download_file', job_id=job_id, filename='review_conflicts.csv') }}">Download Review CSV</a>
+      </div>
+
+      {% if preview_rows %}
+        <h2>Review Preview (First {{ preview_rows|length }} rows)</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>bill_type</th>
+                <th>bill_file</th>
+                <th>extracted_customer</th>
+                <th>extracted_amount</th>
+                <th>best_score</th>
+                <th>candidate_sales_rows</th>
+                <th>reason</th>
+              </tr>
+            </thead>
+            <tbody>
+            {% for row in preview_rows %}
+              <tr>
+                <td>{{ row.bill_type }}</td>
+                <td>{{ row.bill_file }}</td>
+                <td>{{ row.extracted_customer }}</td>
+                <td>{{ row.extracted_amount }}</td>
+                <td>{{ row.best_score }}</td>
+                <td>{{ row.candidate_sales_rows }}</td>
+                <td>{{ row.reason }}</td>
+              </tr>
+            {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% endif %}
+
+      <p><a href="{{ url_for('index') }}">Process another set</a></p>
+    </section>
+  </main>
+</body>
+</html>

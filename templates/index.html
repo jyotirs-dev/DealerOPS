@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Insurance/RTO Sales Updater</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+  <main class="page">
+    <section class="card">
+      <h1>Update Google Sheet From Bills</h1>
+      <p class="subtext">
+        Paste your Google Sheet URL, upload insurance/RTO bills, and the app updates existing Insurance/RTO columns
+        in the same worksheet using your label/position extraction rule.
+      </p>
+
+      {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+          {% for category, message in messages %}
+            <div class="alert alert-{{ category }}">{{ message }}</div>
+          {% endfor %}
+        {% endif %}
+      {% endwith %}
+
+      <form method="post" action="{{ url_for('process_files') }}" enctype="multipart/form-data">
+        <div class="grid">
+          <label>
+            Google Sheet URL
+            <input type="url" name="sheet_url" placeholder="https://docs.google.com/spreadsheets/d/..." required>
+          </label>
+
+          <label>
+            Worksheet Name (optional)
+            <input type="text" name="sheet_name" placeholder="Leave blank for first worksheet">
+          </label>
+
+          <label>
+            Customer Column Header
+            <input type="text" name="customer_col" placeholder="Customer Name" required>
+          </label>
+
+          <label>
+            Insurance Column Header
+            <input type="text" name="insurance_col" placeholder="Insurance Amount" required>
+          </label>
+
+          <label>
+            RTO Column Header
+            <input type="text" name="rto_col" placeholder="RTO Amount" required>
+          </label>
+
+          <label>
+            Name Match Threshold (0-100)
+            <input type="number" name="name_threshold" value="95" min="0" max="100" step="0.1" required>
+          </label>
+
+          <label class="inline-check">
+            <input type="checkbox" name="clear_existing" value="1">
+            Clear existing Insurance/RTO values before writing matches
+          </label>
+        </div>
+
+        <div class="grid">
+          <label>
+            Customer Labels (comma-separated)
+            <input type="text" name="customer_labels" value="Insured, Insured Name, Received From" required>
+          </label>
+
+          <label>
+            Final Amount Labels (comma-separated)
+            <input type="text" name="amount_labels" value="Received with Thanks Rs, Grand Total (in Rs), Grand Total, Final Amount, Amount Payable, Net Payable" required>
+          </label>
+
+          <label>
+            Amount Position
+            <select name="amount_position" required>
+              <option value="same_line">On same line as label</option>
+              <option value="next_line">On next line after label</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="grid">
+          <label>
+            Insurance Bills (PDF/Image, multiple)
+            <input type="file" name="insurance_files" accept=".pdf,.png,.jpg,.jpeg,.tif,.tiff,.bmp,.webp" multiple>
+          </label>
+
+          <label>
+            RTO Bills (PDF/Image, multiple)
+            <input type="file" name="rto_files" accept=".pdf,.png,.jpg,.jpeg,.tif,.tiff,.bmp,.webp" multiple>
+          </label>
+        </div>
+
+        <button type="submit">Process Files</button>
+      </form>
+    </section>
+  </main>
+</body>
+</html>

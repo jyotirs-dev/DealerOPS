@@ -4,3 +4,6 @@ __pycache__/
 uploads/
 outputs/
 googleKey/
+.pytest_cache/
+*.egg-info/
+.DS_Store

@@ -1,14 +1,52 @@
-# Insurance + RTO Sales Updater (Web App)
+# Insurance + RTO Sales Updater
 
-This app updates a Google Sheet with Insurance and RTO bill amounts from uploaded PDF/image bills.
+A modular web application that updates a Google Sheet with Insurance and RTO bill amounts extracted from uploaded PDF/image bills.
+
+## Architecture
+
+The application follows a **functional-programming-oriented** design with clear separation of concerns:
+
+```
+insurance_rto_updater/           # Core package
+├── models.py                    # All data classes (pure data containers)
+├── extraction/                  # Data extraction layer (no business logic)
+│   ├── ocr.py                   # Tesseract OCR engine (CLI + pytesseract)
+│   ├── pdf.py                   # PDF text extraction (PyMuPDF + sips fallback)
+│   ├── text_parser.py           # Parse customer name + amount from bill text
+│   └── file_router.py           # Route file → extractor by extension
+├── domain/                      # Insurance + RTO business rules
+│   ├── normalization.py         # Text normalization utilities
+│   ├── matching.py              # Fuzzy name scoring and candidate selection
+│   └── assignment.py            # Bill → sheet-row assignment + conflict detection
+├── validation/                  # Comparison and validation helpers
+│   └── comparator.py            # Header lookup, sales-row building, write-plan
+├── integrations/                # External service adapters
+│   └── google_sheets.py         # Google Sheets read/write (gspread)
+├── orchestration/               # Pipeline wiring
+│   └── pipeline.py              # extract → match → assign → upload
+└── output/                      # Artifact writers
+    └── csv_writer.py            # Review CSV generation
+
+app.py                           # Flask web app (thin HTTP layer only)
+processor.py                     # Backward-compat shim (→ new package)
+sheets_adapter.py                # Backward-compat shim (→ new package)
+```
+
+### Design Principles
+
+- **Pure functions** — most functions are data-in → data-out with no side effects.
+- **No shared mutable state** — each function receives its inputs explicitly.
+- **Composition over classes** — small functions composed in the pipeline.
+- **Single responsibility** — each module does one thing well.
+- **Documented business logic** — insurance/RTO rules are explained in docstrings.
 
 ## Features
 
 - Paste a Google Sheet URL and upload multiple insurance/RTO bills.
-- Extract bill text from PDFs and images.
-- Extract final amount using **label + fixed position** rule.
-- Match bills to sales rows using **customer name only** (fuzzy threshold configurable).
-- Overwrite existing Insurance/RTO columns in the same worksheet.
+- Extract bill text from PDFs and images via OCR.
+- Extract final amount using **label + position** rule.
+- Match bills to sales rows using **fuzzy customer name matching** (threshold configurable).
+- Write matched amounts to the Insurance/RTO columns.
 - Generate conflict report CSV for unmatched or ambiguous cases.
 
 ## Setup
@@ -19,32 +57,27 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-The app uses Google client libraries + `gspread` for Sheets API access via service account.
+### OCR Requirement
 
-### OCR requirement
-
-For image/scanned documents, install Tesseract on your machine:
+For image/scanned documents, install Tesseract:
 
 - macOS (Homebrew): `brew install tesseract`
 
-If Tesseract is missing, text PDFs still work, but image OCR may fail and those bills will go to review CSV.
+Text PDFs work without Tesseract. Image OCR will fail gracefully (bills go to review CSV).
 
-### PDF fallback behavior
+### PDF Extraction
 
-- Preferred path: `PyMuPDF` extracts text directly from PDFs.
-- Fallback path (macOS): if `PyMuPDF` is unavailable, the app uses `sips + tesseract` OCR to process PDFs.
-- Accuracy is usually better with direct PDF text extraction than OCR fallback.
+- **Preferred**: PyMuPDF extracts text natively from PDFs.
+- **Fallback (macOS)**: `sips + tesseract` OCR when PyMuPDF is unavailable.
 
-## Google Sheets setup
+## Google Sheets Setup
 
 1. Create a Google Cloud service account and download the JSON key file.
-2. Set environment variable:
+2. Set the environment variable:
    ```bash
    export GOOGLE_SERVICE_ACCOUNT_FILE="/absolute/path/to/service-account.json"
    ```
 3. Share your target Google Sheet with the service account email as **Editor**.
-4. In the app UI, paste full Google Sheet URL, for example:
-   `https://docs.google.com/spreadsheets/d/<spreadsheet_id>/edit`
 
 ## Run
 
@@ -52,27 +85,40 @@ If Tesseract is missing, text PDFs still work, but image OCR may fail and those 
 python3 app.py
 ```
 
-Open: `http://127.0.0.1:5000`
+Open: `http://127.0.0.1:5001`
+
+## Tests
+
+```bash
+python3 -m pytest tests/ -v
+```
+
+### Test Structure
+
+| Test file | What it covers |
+|---|---|
+| `test_domain.py` | Normalization, fuzzy matching, assignment logic |
+| `test_extraction.py` | Customer + amount parsing from bill text |
+| `test_validation.py` | Header mapping, sales-row building, write plans |
+| `test_processor_sheet.py` | End-to-end pipeline (mocked OCR) |
+| `test_sheets_adapter.py` | Google Sheets adapter (fake gspread) |
 
 ## Form Inputs
 
-- `Google Sheet URL`: full URL of spreadsheet to update.
-- `Worksheet Name` (optional): tab name; if blank, first worksheet is used.
-- `Customer Column Header`: header in sales sheet containing customer names.
-- `Insurance Column Header`: existing insurance column to overwrite.
-- `RTO Column Header`: existing RTO column to overwrite.
-- `Customer Labels`: bill text labels used to locate customer name.
-- `Final Amount Labels`: bill text labels used to locate final payable amount.
-- `Amount Position`:
-  - `same_line`: amount appears on same line as label.
-  - `next_line`: amount appears on the next line after label.
-- `Name Match Threshold`: fuzzy similarity score from `0` to `100` (recommended `95`).
+- **Google Sheet URL**: Full spreadsheet URL.
+- **Worksheet Name** (optional): Tab name; blank = first worksheet.
+- **Customer Column Header**: Header containing customer names.
+- **Insurance / RTO Column Headers**: Columns to overwrite.
+- **Customer Labels**: Bill text labels near the customer name.
+- **Final Amount Labels**: Bill text labels near the payable amount.
+- **Amount Position**: `same_line` or `next_line` relative to label.
+- **Name Match Threshold**: Fuzzy similarity (0–100, recommended: 95).
 
 ## Outputs
 
-- In-place updates on target Google Sheet.
-- `review_conflicts.csv`: cases that need manual review:
-  - parse issues
-  - no customer match
-  - multiple sales-row matches
-  - multiple bills for same row and bill type
+- In-place updates on the target Google Sheet.
+- `review_conflicts.csv` for cases needing manual review:
+  - Parse failures
+  - No customer match
+  - Multiple sales-row matches
+  - Multiple bills for same row and bill type

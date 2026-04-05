@@ -24,15 +24,14 @@ All functions are **pure** (no side effects, no shared state).
 """
 from __future__ import annotations
 
+import logging
 import re
 from decimal import Decimal, InvalidOperation
 from difflib import SequenceMatcher
 
-from insurance_rto_updater.domain.normalization import (
-    has_relationship_suffix,
-    normalize_text,
-    strip_relationship_suffix,
-)
+from insurance_rto_updater.domain.normalization import normalize_text
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Compiled patterns
@@ -142,7 +141,7 @@ def _refine_customer_name(value: str) -> str:
       - "from Mr Ramesh Kumar as ..." → "Ramesh Kumar"
       - "Mr. Anshu Singh" → "Anshu Singh"
     """
-    cleaned = strip_relationship_suffix(_sanitize_customer_text(value))
+    cleaned = _sanitize_customer_text(value)
 
     # Pattern: "from <title> NAME as ..."
     from_match = re.search(
@@ -189,15 +188,13 @@ _STOP_WORDS = frozenset({
 })
 
 
-def _is_likely_customer_name(
-    value: str, *, allow_single_word: bool = False
-) -> bool:
+def _is_likely_customer_name(value: str) -> bool:
     """
     Heuristic filter to reject text that *looks like* a customer name
     but is actually an insurance field label or boilerplate.
 
     Rules:
-      - Must be 2–6 alphabetic words (or 1–6 after relationship trimming).
+      - Must be 2–6 alphabetic words.
       - No word may be shorter than 2 characters.
       - Must not contain any blocked insurance keywords.
       - Must not consist entirely of stop words.
@@ -208,8 +205,7 @@ def _is_likely_customer_name(
         return False
 
     words = compact.lower().split()
-    min_words = 1 if allow_single_word else 2
-    if len(words) < min_words or len(words) > 6:
+    if len(words) < 2 or len(words) > 6:
         return False
     if any(len(word) < 2 for word in words):
         return False
@@ -282,25 +278,26 @@ def extract_customer(
             # Try same-line extraction first.
             same_line_raw = _parse_customer_tail(line, label)
             same_line_part = _refine_customer_name(same_line_raw)
-            if same_line_part and _is_likely_customer_name(
-                same_line_part,
-                allow_single_word=has_relationship_suffix(same_line_raw),
-            ):
+            if same_line_part and _is_likely_customer_name(same_line_part):
                 candidates.append(same_line_part)
                 continue
 
             # Fall back to the next non-empty line.
             next_line_raw = _next_nonempty_line(lines, idx + 1)
             next_line = _refine_customer_name(next_line_raw)
-            if next_line and _is_likely_customer_name(
-                next_line,
-                allow_single_word=has_relationship_suffix(next_line_raw),
-            ):
+            if next_line and _is_likely_customer_name(next_line):
                 candidates.append(next_line)
 
     # De-duplicate while preserving insertion order.
     unique = list(dict.fromkeys(candidates))
     if not unique:
+        logger.warning(
+            "CUSTOMER_LABEL_NOT_FOUND — no candidate extracted. "
+            "labels_tried=%r  lines_scanned=%d  text_preview=%r",
+            customer_labels,
+            len(lines),
+            text[:200],
+        )
         return None, "CUSTOMER_LABEL_NOT_FOUND"
 
     # Filter to truly distinct normalized forms.
@@ -317,6 +314,12 @@ def extract_customer(
         return resolved[0], None
 
     if not resolved:
+        logger.warning(
+            "CUSTOMER_LABEL_NOT_FOUND — all candidates normalised to duplicates. "
+            "labels_tried=%r  raw_candidates=%r",
+            customer_labels,
+            unique,
+        )
         return None, "CUSTOMER_LABEL_NOT_FOUND"
 
     # Multiple candidates — accept if they are all similar (OCR variants).

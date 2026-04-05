@@ -106,38 +106,65 @@ describe("App", () => {
     expect(screen.getByText("rto-one.pdf")).toBeInTheDocument();
   });
 
+  it("enables processing with a workbook and only RTO receipts", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.upload(
+      screen.getByLabelText(/upload excel workbook/i),
+      buildWorkbookFile(),
+    );
+    await user.click(screen.getByRole("tab", { name: /rto receipts/i }));
+    await user.upload(
+      screen.getByLabelText(/upload rto receipts/i),
+      new File(["rto"], "rto-only.pdf", { type: "application/pdf" }),
+    );
+
+    expect(
+      screen.getByRole("button", { name: /process workbook/i }),
+    ).toBeEnabled();
+    expect(
+      screen.getByText(/ready to process the uploaded workbook/i),
+    ).toBeInTheDocument();
+  });
+
   it("processes the workbook and shows result links", async () => {
     const user = userEvent.setup();
     const fetchMock = vi.mocked(fetch);
-    fetchMock.mockResolvedValue({
-      ok: true,
-      json: async () => ({
-        jobId: "job-1",
-        sheetTitle: "Vehicle Sales Register",
-        headerRow: [
-          "Invoice No.",
-          "Contact Name",
-          "Insurance",
-          "(RTO+ Agent fee 500)",
-        ],
-        rows: [
-          ["INV-1", "Ramesh Kumar", 5400, ""],
-          ["INV-2", "Suresh Sharma", "", 3200],
-        ],
-        summary: {
-          billsProcessed: 2,
-          billsUpdated: 2,
-          rowsUpdated: 2,
-          billsReview: 0,
-          parseFailures: 0,
-          noMatch: 0,
-          multiMatch: 0,
-          rowConflicts: 0,
-        },
-        downloadUrl: "/download/job-1/sales_updated.xlsx",
-        reviewCsvUrl: "/download/job-1/review_conflicts.csv",
-      }),
-    } as Response);
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          jobId: "job-1",
+          sheetTitle: "Vehicle Sales Register",
+          headerRow: [
+            "Invoice No.",
+            "Contact Name",
+            "Insurance",
+            "(RTO+ Agent fee 500)",
+          ],
+          rows: [
+            ["INV-1", "Ramesh Kumar", 5400, ""],
+            ["INV-2", "Suresh Sharma", "", 3200],
+          ],
+          summary: {
+            billsProcessed: 2,
+            billsUpdated: 2,
+            rowsUpdated: 2,
+            billsReview: 0,
+            parseFailures: 0,
+            noMatch: 0,
+            multiMatch: 0,
+            rowConflicts: 0,
+          },
+          downloadUrl: "/download/job-1/sales_updated.xlsx",
+          reviewCsvUrl: "/download/job-1/review_conflicts.csv",
+        }),
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        blob: async () => new Blob(["updated workbook"]),
+      } as Response);
 
     render(<App />);
 
@@ -161,7 +188,7 @@ describe("App", () => {
       ).toHaveAttribute("href", "/download/job-1/sales_updated.xlsx"),
     );
     expect(screen.getByText("Rows updated")).toBeInTheDocument();
-    expect(screen.getByTestId("mock-grid")).toHaveTextContent("5400");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("renders API errors", async () => {

@@ -1,3 +1,5 @@
+import { HyperFormula } from "hyperformula";
+import type { RawCellContent, Sheets } from "hyperformula";
 import * as XLSX from "xlsx";
 
 export type WorkbookPreview = {
@@ -34,12 +36,146 @@ function trimTrailingEmpty(row: unknown[]): unknown[] {
   return trimmed;
 }
 
+function worksheetToMatrix(worksheet: XLSX.WorkSheet): unknown[][] {
+  const ref = worksheet["!ref"];
+  if (!ref) {
+    return [];
+  }
+
+  const range = XLSX.utils.decode_range(ref);
+  const matrix: unknown[][] = [];
+
+  for (let rowIndex = range.s.r; rowIndex <= range.e.r; rowIndex += 1) {
+    const row: unknown[] = [];
+    for (let colIndex = range.s.c; colIndex <= range.e.c; colIndex += 1) {
+      const address = XLSX.utils.encode_cell({ r: rowIndex, c: colIndex });
+      row.push(worksheet[address]);
+    }
+    matrix.push(row);
+  }
+
+  return matrix;
+}
+
+function buildFormulaSource(workbook: XLSX.WorkBook): Sheets {
+  const sheets: Sheets = {};
+
+  for (const sheetTitle of workbook.SheetNames) {
+    const worksheet = workbook.Sheets[sheetTitle];
+    const rows = worksheetToMatrix(worksheet).map((row) =>
+      row.map((cell): RawCellContent => {
+        const typedCell = cell as XLSX.CellObject | undefined;
+        if (!typedCell) {
+          return null;
+        }
+        if (typedCell.f) {
+          return `=${typedCell.f}`;
+        }
+        if (typedCell.t === "e") {
+          return null;
+        }
+        if (typedCell.v === undefined || typedCell.v === null) {
+          return null;
+        }
+        if (typedCell.t === "b") {
+          return Boolean(typedCell.v);
+        }
+        if (typedCell.t === "n") {
+          return Number(typedCell.v);
+        }
+        return String(typedCell.v);
+      }),
+    );
+    sheets[sheetTitle] = rows;
+  }
+
+  return sheets;
+}
+
+function evaluateWorkbookFormulas(
+  workbook: XLSX.WorkBook,
+): Map<string, unknown[][]> {
+  const results = new Map<string, unknown[][]>();
+
+  try {
+    const hf = HyperFormula.buildFromSheets(buildFormulaSource(workbook), {
+      licenseKey: "gpl-v3",
+    });
+
+    for (const sheetTitle of workbook.SheetNames) {
+      const sheetId = hf.getSheetId(sheetTitle);
+      if (sheetId === undefined) {
+        continue;
+      }
+      results.set(sheetTitle, hf.getSheetValues(sheetId) as unknown[][]);
+    }
+  } catch {
+    return results;
+  }
+
+  return results;
+}
+
+function normalizeDisplayValue(value: unknown): string | number | boolean {
+  if (value === undefined || value === null) {
+    return "";
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return value;
+  }
+  return String(value);
+}
+
+function matrixToDisplayRows(
+  worksheet: XLSX.WorkSheet,
+  evaluatedRows: unknown[][] | undefined,
+): unknown[][] {
+  return worksheetToMatrix(worksheet).map((row, rowIndex) =>
+    row.map((cell, colIndex) => {
+      const typedCell = cell as XLSX.CellObject | undefined;
+      const evaluatedValue = evaluatedRows?.[rowIndex]?.[colIndex];
+
+      if (typedCell?.f) {
+        if (
+          evaluatedValue !== undefined &&
+          evaluatedValue !== null &&
+          `${evaluatedValue}` !== "#LIC!"
+        ) {
+          return normalizeDisplayValue(evaluatedValue);
+        }
+        if (typedCell.w !== undefined && typedCell.w !== "") {
+          return normalizeDisplayValue(typedCell.w);
+        }
+        if (typedCell.v !== undefined && typedCell.v !== null) {
+          return normalizeDisplayValue(typedCell.v);
+        }
+        return `=${typedCell.f}`;
+      }
+
+      if (!typedCell) {
+        return "";
+      }
+      if (typedCell.w !== undefined && typedCell.w !== "") {
+        return normalizeDisplayValue(typedCell.w);
+      }
+      if (typedCell.v !== undefined && typedCell.v !== null) {
+        return normalizeDisplayValue(typedCell.v);
+      }
+      return "";
+    }),
+  );
+}
+
 export async function readWorkbookPreview(file: File): Promise<WorkbookPreview> {
   const buffer = await file.arrayBuffer();
   const workbook = XLSX.read(buffer, {
     type: "array",
-    cellDates: true,
+    cellFormula: true,
+    cellNF: true,
+    cellText: true,
+    sheetStubs: true,
   });
+  const evaluatedSheets = evaluateWorkbookFormulas(workbook);
 
   const requiredHeaders = new Set(
     Object.values(FIXED_HEADERS).map(normalizeHeader),
@@ -47,12 +183,10 @@ export async function readWorkbookPreview(file: File): Promise<WorkbookPreview> 
 
   for (const sheetTitle of workbook.SheetNames) {
     const worksheet = workbook.Sheets[sheetTitle];
-    const matrix = XLSX.utils.sheet_to_json<unknown[]>(worksheet, {
-      header: 1,
-      raw: false,
-      defval: "",
-      blankrows: false,
-    });
+    const matrix = matrixToDisplayRows(
+      worksheet,
+      evaluatedSheets.get(sheetTitle),
+    );
     if (matrix.length === 0) {
       continue;
     }

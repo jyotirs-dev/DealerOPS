@@ -145,10 +145,18 @@ export default function App() {
   const { columnDefs, rowData } = buildGridModel(workbookPreview);
   const canProcess =
     workbookFile !== null &&
-    workbookPreview !== null &&
-    workbookError === null &&
     (rtoFiles.length > 0 || insuranceFiles.length > 0) &&
     !isProcessing;
+
+  const readinessMessage = isProcessing
+    ? "Processing workbook..."
+    : workbookFile === null
+      ? "Upload the sales workbook to continue."
+      : rtoFiles.length === 0 && insuranceFiles.length === 0
+        ? "Upload at least one RTO receipt or insurance file."
+        : workbookError
+          ? "Workbook preview is unavailable, but you can still process the uploaded file."
+          : "Ready to process the uploaded workbook.";
 
   async function handleWorkbookUpload(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0] ?? null;
@@ -214,12 +222,28 @@ export default function App() {
 
       const result = payload as ProcessResponse;
       setProcessResult(result);
-      setWorkbookPreview({
-        fileName: workbookFile.name,
-        sheetTitle: result.sheetTitle,
-        headerRow: result.headerRow,
-        rows: result.rows,
-      });
+      try {
+        const workbookResponse = await fetch(result.downloadUrl);
+        if (!workbookResponse.ok) {
+          throw new Error("Failed to reload updated workbook preview.");
+        }
+        const workbookBlob = await workbookResponse.blob();
+        const refreshedPreview = await readWorkbookPreview(
+          new File([workbookBlob], workbookFile.name, {
+            type:
+              workbookFile.type ||
+              "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          }),
+        );
+        setWorkbookPreview(refreshedPreview);
+      } catch {
+        setWorkbookPreview({
+          fileName: workbookFile.name,
+          sheetTitle: result.sheetTitle,
+          headerRow: result.headerRow,
+          rows: result.rows,
+        });
+      }
       setActiveTab("sales");
     } catch (error) {
       setProcessError(
@@ -232,26 +256,22 @@ export default function App() {
 
   return (
     <main className="app-shell">
-      <section className="hero-panel">
-        <div className="hero-copy">
-          <p className="eyebrow">Excel-first reconciliation</p>
-          <h1>Upload a workbook, reconcile RTO and insurance bills, and download the updated sheet.</h1>
-          <p className="hero-text">
-            This flow keeps the uploaded Excel file as the system of record.
-            The target worksheet is previewed in-browser, updated on the server,
-            and returned as a downloadable workbook together with a review CSV.
-          </p>
-        </div>
-        <div className="fixed-headers-card">
-          <span className="card-label">Fixed headers</span>
-          <strong>{FIXED_HEADERS.customer}</strong>
-          <strong>{FIXED_HEADERS.insurance}</strong>
-          <strong>{FIXED_HEADERS.rto}</strong>
-        </div>
-      </section>
-
       <section className="workspace-grid">
         <div className="control-panel">
+          <div className="compact-header">
+            <p className="eyebrow">Excel-first reconciliation</p>
+            <h1>Workbook updater</h1>
+            <p className="compact-copy">
+              Upload the sales workbook, add receipt files, and download the
+              updated Excel output.
+            </p>
+            <div className="status-chip-row">
+              <span className="status-chip">{FIXED_HEADERS.customer}</span>
+              <span className="status-chip">{FIXED_HEADERS.insurance}</span>
+              <span className="status-chip">{FIXED_HEADERS.rto}</span>
+            </div>
+          </div>
+
           <div className="tab-strip" role="tablist" aria-label="Upload tabs">
             {(["sales", "rto", "insurance"] as ActiveTab[]).map((tab) => (
               <button
@@ -417,6 +437,9 @@ export default function App() {
               {isProcessing ? "Processing workbook..." : "Process workbook"}
             </button>
             <p className="process-note">
+              {readinessMessage}
+            </p>
+            <p className="process-note">
               Downloaded workbook is the v1 output. Google Sheets export is intentionally deferred.
             </p>
           </div>
@@ -473,6 +496,7 @@ export default function App() {
             {workbookPreview ? (
               <div className="ag-theme-quartz grid-theme">
                 <AgGridReact<GridRow>
+                  theme="legacy"
                   rowData={rowData}
                   columnDefs={columnDefs}
                   animateRows

@@ -14,6 +14,7 @@ from insurance_rto_updater.validation.comparator import (
     build_sales_rows,
     build_sheet_write_plan,
     find_header_indices,
+    split_assignments_for_write,
 )
 
 
@@ -99,6 +100,29 @@ class BuildSheetWritePlanTests(unittest.TestCase):
             clear_existing=False,
         )
         self.assertEqual(plan.clear_columns, [])
+
+    def test_preserves_existing_target_values_when_clear_disabled(self):
+        assignments = [
+            Assignment("insurance", "a.pdf", 2, Decimal("5000"), "A", 98.0),
+            Assignment("rto", "b.pdf", 3, Decimal("3000"), "B", 96.0),
+        ]
+
+        writable, review_rows = split_assignments_for_write(
+            accepted_assignments=assignments,
+            data_rows=[
+                ["A", "", ""],
+                ["B", "", "1800"],
+            ],
+            insurance_col=2,
+            rto_col=3,
+            clear_existing=False,
+        )
+
+        self.assertEqual(len(writable), 1)
+        self.assertEqual(writable[0].bill_type, "insurance")
+        self.assertEqual(len(review_rows), 1)
+        self.assertEqual(review_rows[0].bill_file, "b.pdf")
+        self.assertEqual(review_rows[0].reason, "EXISTING_TARGET_VALUE")
 
 
 if __name__ == "__main__":

@@ -32,7 +32,11 @@ class ApiTests(unittest.TestCase):
         app_module.app.config["TESTING"] = True
         self.client = app_module.app.test_client()
 
-    def _workbook_bytes(self) -> bytes:
+    def _workbook_bytes(
+        self,
+        existing_rto: int | str = "",
+        customer_rows: list[list[str | int]] | None = None,
+    ) -> bytes:
         workbook = Workbook()
         worksheet = workbook.active
         worksheet.title = "Vehicle Sales Register"
@@ -43,8 +47,12 @@ class ApiTests(unittest.TestCase):
                 FIXED_RTO_HEADER,
             ]
         )
-        worksheet.append(["Ramesh Kumar", "", ""])
-        worksheet.append(["Suresh Sharma", "", ""])
+        rows = customer_rows or [
+            ["Ramesh Kumar", "", ""],
+            ["Suresh Sharma", "", existing_rto],
+        ]
+        for row in rows:
+            worksheet.append(row)
         buffer = io.BytesIO()
         workbook.save(buffer)
         return buffer.getvalue()
@@ -136,6 +144,85 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(len(payload["reviewRows"]), 1)
         self.assertEqual(payload["reviewRows"][0]["billFile"], "insurance-one.pdf")
         self.assertEqual(payload["reviewRows"][0]["reason"], "NO_MATCH")
+
+    @patch("insurance_rto_updater.orchestration.pipeline.extract_text_from_file")
+    def test_process_endpoint_preserves_existing_rto_values_when_clear_disabled(
+        self,
+        mocked_extract,
+    ) -> None:
+        mocked_extract.return_value = "Received From: Suresh Sharma\nGrand Total: 3200"
+
+        response = self.client.post(
+            "/api/process",
+            data={
+                "workbook": (
+                    io.BytesIO(self._workbook_bytes(existing_rto=1800)),
+                    "sales.xlsx",
+                ),
+                "rto_files": (
+                    io.BytesIO(b"rto"),
+                    "rto-one.pdf",
+                ),
+                "clear_existing": "0",
+            },
+            content_type="multipart/form-data",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        assert payload is not None
+
+        self.assertEqual(payload["summary"]["billsUpdated"], 0)
+        self.assertEqual(payload["summary"]["rowsUpdated"], 0)
+        self.assertEqual(payload["summary"]["billsReview"], 1)
+        self.assertEqual(payload["reviewRows"][0]["reason"], "EXISTING_TARGET_VALUE")
+        self.assertEqual(payload["rows"][1][2], 1800)
+
+        download_response = self.client.get(payload["downloadUrl"])
+        self.assertEqual(download_response.status_code, 200)
+
+        workbook = load_workbook(io.BytesIO(download_response.data))
+        worksheet = workbook[payload["sheetTitle"]]
+        self.assertEqual(worksheet.cell(row=3, column=3).value, 1800)
+
+    @patch("insurance_rto_updater.orchestration.pipeline.extract_text_from_file")
+    def test_process_endpoint_uses_filename_first_name_fallback(
+        self,
+        mocked_extract,
+    ) -> None:
+        mocked_extract.return_value = "Grand Total: 5937"
+
+        response = self.client.post(
+            "/api/process",
+            data={
+                "workbook": (
+                    io.BytesIO(
+                        self._workbook_bytes(
+                            customer_rows=[
+                                ["VIRENDRA VALIYA S/O GIRDHARI", "", ""],
+                                ["OTHER PERSON", "", ""],
+                            ]
+                        )
+                    ),
+                    "sales.xlsx",
+                ),
+                "rto_files": (
+                    io.BytesIO(b"rto"),
+                    "virendra_valiya_girdhari_2_feb.pdf",
+                ),
+                "clear_existing": "1",
+            },
+            content_type="multipart/form-data",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        assert payload is not None
+
+        self.assertEqual(payload["summary"]["billsUpdated"], 1)
+        self.assertEqual(payload["summary"]["parseFailures"], 0)
+        self.assertEqual(payload["reviewRows"], [])
+        self.assertEqual(payload["rows"][0][2], 5937.0)
 
     def test_process_endpoint_requires_receipts(self) -> None:
         response = self.client.post(

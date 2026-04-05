@@ -23,6 +23,7 @@ from insurance_rto_updater.domain.assignment import (
     Assignment,
     ReviewRow,
     assign_bill_to_row,
+    assign_bill_to_row_by_filename_first_name,
     detect_row_conflicts,
 )
 from insurance_rto_updater.extraction.file_router import extract_text_from_file
@@ -41,6 +42,7 @@ from insurance_rto_updater.validation.comparator import (
     build_sales_rows,
     build_sheet_write_plan,
     find_header_indices,
+    split_assignments_for_write,
 )
 
 
@@ -173,12 +175,21 @@ def run_processing_pipeline(
         bill = _parse_single_bill(bill_type, path, config)
 
         # If extraction or parsing failed, send straight to review.
-        has_error = (
-            bill.extraction_error
-            or bill.customer_error
-            or bill.amount_error
-        )
-        if has_error:
+        if bill.extraction_error or bill.amount_error:
+            parse_failures += 1
+            review_rows.append(_bill_to_review_row(bill))
+            continue
+
+        if bill.customer_error:
+            if bill.customer_error == "CUSTOMER_LABEL_NOT_FOUND":
+                filename_assignment = assign_bill_to_row_by_filename_first_name(
+                    bill,
+                    sales_rows,
+                )
+                if filename_assignment is not None:
+                    assignments.append(filename_assignment)
+                    continue
+
             parse_failures += 1
             review_rows.append(_bill_to_review_row(bill))
             continue
@@ -203,9 +214,18 @@ def run_processing_pipeline(
     )
     review_rows.extend(conflict_reviews)
 
+    writable_assignments, preserved_reviews = split_assignments_for_write(
+        accepted_assignments=accepted,
+        data_rows=data_rows,
+        insurance_col=insurance_col,
+        rto_col=rto_col,
+        clear_existing=config.clear_existing,
+    )
+    review_rows.extend(preserved_reviews)
+
     # Step 6: build the sheet write plan.
     write_plan = build_sheet_write_plan(
-        accepted_assignments=accepted,
+        accepted_assignments=writable_assignments,
         insurance_col=insurance_col,
         rto_col=rto_col,
         max_row=max_row,
@@ -216,13 +236,13 @@ def run_processing_pipeline(
     review_csv_path = write_review_csv(output_dir, review_rows)
 
     # Aggregate result summary.
-    rows_updated = len({a.row_index for a in accepted})
+    rows_updated = len({a.row_index for a in writable_assignments})
 
     processing_result = ProcessingResult(
         review_csv_path=review_csv_path,
         review_rows=review_rows,
         bills_processed=len(bill_specs),
-        bills_updated=len(accepted),
+        bills_updated=len(writable_assignments),
         rows_updated=rows_updated,
         bills_review=len(review_rows),
         parse_failures=parse_failures,

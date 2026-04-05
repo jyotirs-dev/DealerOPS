@@ -26,6 +26,8 @@ new data structures.
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 from insurance_rto_updater.models import (
     Assignment,
     BillParseResult,
@@ -36,6 +38,7 @@ from insurance_rto_updater.domain.matching import (
     score_all_candidates,
     serialize_candidates,
 )
+from insurance_rto_updater.domain.normalization import normalize_customer_name
 
 
 # ---------------------------------------------------------------------------
@@ -47,6 +50,38 @@ _SAFE_FALLBACK_FLOOR = 80.0
 
 # Required margin between #1 and #2 for safe-fallback to kick in.
 _SAFE_FALLBACK_GAP = 10.0
+
+_IGNORED_FILENAME_TOKENS = frozenset(
+    {
+        "bill",
+        "insurance",
+        "rto",
+        "jan",
+        "january",
+        "feb",
+        "february",
+        "mar",
+        "march",
+        "apr",
+        "april",
+        "may",
+        "jun",
+        "june",
+        "jul",
+        "july",
+        "aug",
+        "august",
+        "sep",
+        "sept",
+        "september",
+        "oct",
+        "october",
+        "nov",
+        "november",
+        "dec",
+        "december",
+    }
+)
 
 
 # ---------------------------------------------------------------------------
@@ -110,6 +145,42 @@ def assign_bill_to_row(
         amount=bill.amount,
         matched_customer=selected_row.customer_raw,
         score=score,
+    )
+
+
+def assign_bill_to_row_by_filename_first_name(
+    bill: BillParseResult,
+    sales_rows: list[SalesRow],
+) -> Assignment | None:
+    """
+    Fallback assignment when bill text does not expose a customer label.
+
+    Uses the first meaningful token from the bill filename stem and matches it
+    against the first token of each normalized sales-row customer name.
+    Auto-approves only when this first-name match is unique.
+    """
+    if bill.amount is None:
+        return None
+
+    first_name = _extract_first_name_from_filename(bill.file_name)
+    if not first_name:
+        return None
+
+    matches = [
+        row
+        for row in sales_rows
+        if _first_name_token(row.customer_norm) == first_name
+    ]
+    if len(matches) != 1:
+        return None
+
+    return Assignment(
+        bill_type=bill.bill_type,
+        bill_file=bill.file_name,
+        row_index=matches[0].row_index,
+        amount=bill.amount,
+        matched_customer=matches[0].customer_raw,
+        score=100.0,
     )
 
 
@@ -196,3 +267,20 @@ def _try_safe_fallback_or_review(
         ),
         reason="NO_MATCH",
     )
+
+
+def _extract_first_name_from_filename(file_name: str) -> str:
+    """Return the first meaningful token from the filename stem."""
+    stem = Path(file_name).stem
+    normalized = normalize_customer_name(stem)
+    for token in normalized.split():
+        if token.isdigit() or token in _IGNORED_FILENAME_TOKENS:
+            continue
+        return token
+    return ""
+
+
+def _first_name_token(value: str) -> str:
+    """Return the first token from a normalized customer name."""
+    parts = value.split()
+    return parts[0] if parts else ""

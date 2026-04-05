@@ -9,6 +9,7 @@ from __future__ import annotations
 import unittest
 from decimal import Decimal
 
+from insurance_rto_updater.domain import matching as matching_module
 from insurance_rto_updater.domain.normalization import (
     normalize_customer_name,
     normalize_text,
@@ -16,6 +17,7 @@ from insurance_rto_updater.domain.normalization import (
 from insurance_rto_updater.domain.matching import score_all_candidates, serialize_candidates
 from insurance_rto_updater.domain.assignment import (
     assign_bill_to_row,
+    assign_bill_to_row_by_filename_first_name,
     detect_row_conflicts,
 )
 from insurance_rto_updater.models import Assignment, BillParseResult, ReviewRow, SalesRow
@@ -79,6 +81,50 @@ class MatchingTests(unittest.TestCase):
         self.assertEqual(scored[0][0].customer_raw, "BADARASINGH C/O NAGUSINGH")
         self.assertGreaterEqual(scored[0][1], 95.0)
 
+    def test_missing_query_token_caps_subset_score(self):
+        rows = self._make_sales_rows(
+            [
+                "VIRENDRA VALIYA S/O GIRDHARI",
+                "VIRENDRA S/O KANHAIYALAL",
+            ]
+        )
+        scored = score_all_candidates("VIRENDRA VALIYA", rows)
+        self.assertEqual(scored[0][0].customer_raw, "VIRENDRA VALIYA S/O GIRDHARI")
+        self.assertEqual(scored[0][1], 100.0)
+        self.assertEqual(scored[1][0].customer_raw, "VIRENDRA S/O KANHAIYALAL")
+        self.assertEqual(scored[1][1], 50.0)
+
+    def test_missing_query_token_caps_subset_score_with_rapidfuzz(self):
+        rows = self._make_sales_rows(
+            [
+                "VIRENDRA VALIYA S/O GIRDHARI",
+                "VIRENDRA S/O KANHAIYALAL",
+            ]
+        )
+
+        class FakeFuzz:
+            @staticmethod
+            def WRatio(query: str, candidate: str) -> float:
+                if candidate == "virendra":
+                    return 90.0
+                return 100.0
+
+            @staticmethod
+            def token_set_ratio(query: str, candidate: str) -> float:
+                return 100.0
+
+        previous = matching_module._fuzz
+        matching_module._fuzz = FakeFuzz()
+        try:
+            scored = score_all_candidates("VIRENDRA VALIYA", rows)
+        finally:
+            matching_module._fuzz = previous
+
+        self.assertEqual(scored[0][0].customer_raw, "VIRENDRA VALIYA S/O GIRDHARI")
+        self.assertEqual(scored[0][1], 100.0)
+        self.assertEqual(scored[1][0].customer_raw, "VIRENDRA S/O KANHAIYALAL")
+        self.assertEqual(scored[1][1], 50.0)
+
     def test_serialize_candidates_format(self):
         rows = self._make_sales_rows(["ABC"])
         result = serialize_candidates([(rows[0], 95.5)])
@@ -134,6 +180,40 @@ class AssignmentTests(unittest.TestCase):
         result = assign_bill_to_row(bill, rows, name_threshold=95.0)
         self.assertIsInstance(result, Assignment)
         self.assertEqual(result.row_index, 2)
+
+    def test_filename_first_name_fallback_returns_unique_assignment(self):
+        bill = BillParseResult(
+            bill_type="rto",
+            file_name="virendra_valiya_girdhari_2_feb.pdf",
+            raw_text="",
+            amount=Decimal("5937"),
+            customer_error="CUSTOMER_LABEL_NOT_FOUND",
+        )
+        rows = self._make_sales_rows(
+            ["VIRENDRA VALIYA S/O GIRDHARI", "OTHER PERSON"]
+        )
+        result = assign_bill_to_row_by_filename_first_name(bill, rows)
+        self.assertIsInstance(result, Assignment)
+        assert isinstance(result, Assignment)
+        self.assertEqual(result.row_index, 2)
+        self.assertEqual(result.score, 100.0)
+
+    def test_filename_first_name_fallback_rejects_ambiguous_matches(self):
+        bill = BillParseResult(
+            bill_type="rto",
+            file_name="virendra_valiya_girdhari_2_feb.pdf",
+            raw_text="",
+            amount=Decimal("5937"),
+            customer_error="CUSTOMER_LABEL_NOT_FOUND",
+        )
+        rows = self._make_sales_rows(
+            [
+                "VIRENDRA VALIYA S/O GIRDHARI",
+                "VIRENDRA S/O KANHAIYALAL",
+            ]
+        )
+        result = assign_bill_to_row_by_filename_first_name(bill, rows)
+        self.assertIsNone(result)
 
     def test_detect_row_conflicts_accepts_unique(self):
         assignments = [

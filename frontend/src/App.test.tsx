@@ -263,7 +263,7 @@ describe("App", () => {
         "true",
       ),
     );
-    expect(screen.getByText("Not verified")).toBeInTheDocument();
+    expect(screen.getByText("Excluded")).toBeInTheDocument();
     expect(
       screen.getByText("No matching sales row cleared the configured threshold."),
     ).toBeInTheDocument();

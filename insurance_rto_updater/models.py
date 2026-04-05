@@ -52,6 +52,7 @@ class ProcessingConfig:
     clear_existing:
         If ``True``, the pipeline blanks the insurance & RTO columns
         before writing new values (prevents stale data leaking through).
+        If ``False``, existing target-cell values are preserved.
     """
 
     sheet_name: str | None

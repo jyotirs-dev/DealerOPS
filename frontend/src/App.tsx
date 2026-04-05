@@ -80,6 +80,8 @@ const REVIEW_REASON_COPY: Record<string, string> = {
   MULTIPLE_SALES_ROWS: "Multiple sales rows matched the extracted customer.",
   MULTIPLE_BILLS_FOR_ROW_TYPE:
     "Multiple bills claimed the same sales row for this bill type.",
+  EXISTING_TARGET_VALUE:
+    "An existing Insurance / RTO value was preserved because Clear existing was off.",
 };
 
 function buildGridModel(preview: WorkbookPreview | null): {
@@ -610,7 +612,8 @@ export default function App() {
                 <div className="review-screen">
                   <p className="review-intro">
                     These rows were excluded from automatic updates because the
-                    verification step could not confirm them confidently.
+                    verification step could not confirm them confidently or the
+                    current settings preserved an existing value.
                   </p>
                   <div className="review-table-shell">
                     <table className="review-table">
@@ -633,7 +636,7 @@ export default function App() {
                             <td>{row.extractedCustomer || "Not found"}</td>
                             <td>{row.extractedAmount || "Not found"}</td>
                             <td>
-                              <span className="review-status-pill">Not verified</span>
+                              <span className="review-status-pill">Excluded</span>
                             </td>
                             <td>{formatReviewReason(row.reason)}</td>
                             <td>{row.candidateSalesRows || row.bestScore || "None"}</td>

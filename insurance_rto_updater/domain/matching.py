@@ -13,12 +13,14 @@ Key design decision — **single scoring function**:
 Scoring strategy
 ----------------
 1. If ``rapidfuzz`` is installed (recommended), use its ``WRatio`` and
-   ``token_set_ratio`` algorithms — both are designed for short strings
-   with potential word-order variation.
+   ``token_set_ratio`` algorithms.
 2. Fallback: stdlib ``SequenceMatcher`` × 100 (same 0–100 scale).
 3. Token-overlap bonus: if ≥ 80% of the query tokens appear verbatim in
    the candidate, the overlap ratio × 100 is used as an alternative score.
    This catches exact-token matches that fuzzy algorithms may under-score.
+4. If the candidate is a strict token subset of the extracted customer,
+   cap the final score by query-token coverage so missing surname tokens
+   cannot receive a misleading perfect score.
 
 All functions are **pure** — they take data in and return data out with
 no side effects.
@@ -60,6 +62,16 @@ def score_all_candidates(
     scored: list[tuple[SalesRow, float]] = []
 
     for row in sales_rows:
+        row_tokens = set(row.customer_norm.split())
+        overlap = 0.0
+        if query_tokens and row_tokens:
+            overlap = len(query_tokens & row_tokens) / max(
+                1, len(query_tokens)
+            )
+        strict_subset_match = bool(
+            query_tokens and row_tokens and row_tokens < query_tokens
+        )
+
         # Primary fuzzy score.
         if _fuzz is not None:
             wratio = float(_fuzz.WRatio(query_norm, row.customer_norm))
@@ -75,13 +87,11 @@ def score_all_candidates(
 
         # Token-overlap bonus: catches exact-token matches that fuzzy
         # algorithms may under-weight (e.g. "ANSHU SINGH" vs "ANSHU SINGH").
-        row_tokens = set(row.customer_norm.split())
         if query_tokens and row_tokens:
-            overlap = len(query_tokens & row_tokens) / max(
-                1, len(query_tokens)
-            )
             if overlap >= 0.80:
                 score = max(score, overlap * 100)
+            if strict_subset_match:
+                score = min(score, overlap * 100)
 
         scored.append((row, score))
 

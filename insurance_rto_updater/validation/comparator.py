@@ -19,6 +19,7 @@ from insurance_rto_updater.domain.normalization import (
 from insurance_rto_updater.models import (
     Assignment,
     CellValueUpdate,
+    ReviewRow,
     SalesRow,
     SheetWritePlan,
 )
@@ -107,6 +108,53 @@ def build_sales_rows(
 # Write-plan construction
 # ---------------------------------------------------------------------------
 
+def split_assignments_for_write(
+    accepted_assignments: list[Assignment],
+    data_rows: list[list[str]],
+    insurance_col: int,
+    rto_col: int,
+    clear_existing: bool,
+) -> tuple[list[Assignment], list[ReviewRow]]:
+    """
+    Preserve already-filled target cells when column clearing is disabled.
+
+    When ``clear_existing`` is ``False``, accepted assignments that target a
+    non-empty insurance / RTO cell are moved to review instead of overwriting
+    the existing value.
+    """
+    if clear_existing:
+        return accepted_assignments, []
+
+    writable_assignments: list[Assignment] = []
+    preserved_reviews: list[ReviewRow] = []
+
+    for assignment in accepted_assignments:
+        target_col = (
+            insurance_col if assignment.bill_type == "insurance" else rto_col
+        )
+        existing_value = _sheet_cell_value(
+            data_rows=data_rows,
+            row_index=assignment.row_index,
+            col_index=target_col,
+        )
+        if existing_value:
+            preserved_reviews.append(
+                ReviewRow(
+                    bill_type=assignment.bill_type,
+                    bill_file=assignment.bill_file,
+                    extracted_customer=assignment.matched_customer,
+                    extracted_amount=str(assignment.amount),
+                    best_score=f"{assignment.score:.2f}",
+                    candidate_sales_rows=f"row={assignment.row_index}",
+                    reason="EXISTING_TARGET_VALUE",
+                )
+            )
+            continue
+
+        writable_assignments.append(assignment)
+
+    return writable_assignments, preserved_reviews
+
 def build_sheet_write_plan(
     accepted_assignments: list[Assignment],
     insurance_col: int,
@@ -145,3 +193,21 @@ def build_sheet_write_plan(
         clear_columns=clear_columns,
         value_updates=value_updates,
     )
+
+
+def _sheet_cell_value(
+    data_rows: list[list[str]],
+    row_index: int,
+    col_index: int,
+) -> str:
+    """Read a 1-based sheet cell from ``data_rows`` as trimmed text."""
+    data_row_index = row_index - 2
+    if data_row_index < 0 or data_row_index >= len(data_rows):
+        return ""
+
+    row = data_rows[data_row_index]
+    if col_index - 1 >= len(row):
+        return ""
+
+    value = row[col_index - 1]
+    return str(value).strip() if value is not None else ""

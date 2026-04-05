@@ -1,0 +1,127 @@
+from __future__ import annotations
+
+import io
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from openpyxl import Workbook, load_workbook
+
+import app as app_module
+from insurance_rto_updater.integrations.local_workbook import (
+    FIXED_CUSTOMER_HEADER,
+    FIXED_INSURANCE_HEADER,
+    FIXED_RTO_HEADER,
+)
+
+
+class ApiTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        self.upload_root = Path(self.temp_dir.name) / "uploads"
+        self.output_root = Path(self.temp_dir.name) / "outputs"
+        self.upload_patch = patch.object(app_module, "UPLOAD_ROOT", self.upload_root)
+        self.output_patch = patch.object(app_module, "OUTPUT_ROOT", self.output_root)
+        self.upload_patch.start()
+        self.output_patch.start()
+        self.addCleanup(self.upload_patch.stop)
+        self.addCleanup(self.output_patch.stop)
+        app_module._ensure_dirs()
+        app_module.app.config["TESTING"] = True
+        self.client = app_module.app.test_client()
+
+    def _workbook_bytes(self) -> bytes:
+        workbook = Workbook()
+        worksheet = workbook.active
+        worksheet.title = "Vehicle Sales Register"
+        worksheet.append(
+            [
+                FIXED_CUSTOMER_HEADER,
+                FIXED_INSURANCE_HEADER,
+                FIXED_RTO_HEADER,
+            ]
+        )
+        worksheet.append(["Ramesh Kumar", "", ""])
+        worksheet.append(["Suresh Sharma", "", ""])
+        buffer = io.BytesIO()
+        workbook.save(buffer)
+        return buffer.getvalue()
+
+    @patch("insurance_rto_updater.orchestration.pipeline.extract_text_from_file")
+    def test_process_endpoint_updates_and_returns_workbook(
+        self,
+        mocked_extract,
+    ) -> None:
+        def fake_extract(path: Path) -> str:
+            if "insurance" in path.name:
+                return "Insured: Ramesh Kumar\nGrand Total: 5400"
+            return "Received From: Suresh Sharma\nGrand Total: 3200"
+
+        mocked_extract.side_effect = fake_extract
+
+        response = self.client.post(
+            "/api/process",
+            data={
+                "workbook": (
+                    io.BytesIO(self._workbook_bytes()),
+                    "sales.xlsx",
+                ),
+                "insurance_files": (
+                    io.BytesIO(b"insurance"),
+                    "insurance-one.pdf",
+                ),
+                "rto_files": (
+                    io.BytesIO(b"rto"),
+                    "rto-one.pdf",
+                ),
+                "clear_existing": "1",
+            },
+            content_type="multipart/form-data",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        assert payload is not None
+
+        self.assertEqual(payload["sheetTitle"], "Vehicle Sales Register")
+        self.assertEqual(payload["summary"]["billsProcessed"], 2)
+        self.assertEqual(payload["summary"]["billsUpdated"], 2)
+        self.assertTrue(payload["downloadUrl"].endswith("sales_updated.xlsx"))
+        self.assertTrue(payload["reviewCsvUrl"].endswith("review_conflicts.csv"))
+        self.assertEqual(payload["rows"][0][1], 5400.0)
+        self.assertEqual(payload["rows"][1][2], 3200.0)
+
+        review_response = self.client.get(payload["reviewCsvUrl"])
+        self.assertEqual(review_response.status_code, 200)
+
+        download_response = self.client.get(payload["downloadUrl"])
+        self.assertEqual(download_response.status_code, 200)
+
+        workbook = load_workbook(io.BytesIO(download_response.data))
+        worksheet = workbook[payload["sheetTitle"]]
+        self.assertEqual(worksheet.cell(row=2, column=2).value, 5400.0)
+        self.assertEqual(worksheet.cell(row=3, column=3).value, 3200.0)
+
+    def test_process_endpoint_requires_receipts(self) -> None:
+        response = self.client.post(
+            "/api/process",
+            data={
+                "workbook": (
+                    io.BytesIO(self._workbook_bytes()),
+                    "sales.xlsx",
+                ),
+            },
+            content_type="multipart/form-data",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.get_json()["error"],
+            "Upload at least one insurance or RTO bill.",
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

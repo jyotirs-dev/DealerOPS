@@ -88,6 +88,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(payload["sheetTitle"], "Vehicle Sales Register")
         self.assertEqual(payload["summary"]["billsProcessed"], 2)
         self.assertEqual(payload["summary"]["billsUpdated"], 2)
+        self.assertEqual(payload["reviewRows"], [])
         self.assertTrue(payload["downloadUrl"].endswith("sales_updated.xlsx"))
         self.assertTrue(payload["reviewCsvUrl"].endswith("review_conflicts.csv"))
         self.assertEqual(payload["rows"][0][1], 5400.0)
@@ -103,6 +104,38 @@ class ApiTests(unittest.TestCase):
         worksheet = workbook[payload["sheetTitle"]]
         self.assertEqual(worksheet.cell(row=2, column=2).value, 5400.0)
         self.assertEqual(worksheet.cell(row=3, column=3).value, 3200.0)
+
+    @patch("insurance_rto_updater.orchestration.pipeline.extract_text_from_file")
+    def test_process_endpoint_returns_review_rows_with_reason(
+        self,
+        mocked_extract,
+    ) -> None:
+        mocked_extract.return_value = "Insured: Unknown Person\nGrand Total: 5400"
+
+        response = self.client.post(
+            "/api/process",
+            data={
+                "workbook": (
+                    io.BytesIO(self._workbook_bytes()),
+                    "sales.xlsx",
+                ),
+                "insurance_files": (
+                    io.BytesIO(b"insurance"),
+                    "insurance-one.pdf",
+                ),
+            },
+            content_type="multipart/form-data",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        assert payload is not None
+
+        self.assertEqual(payload["summary"]["billsUpdated"], 0)
+        self.assertEqual(payload["summary"]["billsReview"], 1)
+        self.assertEqual(len(payload["reviewRows"]), 1)
+        self.assertEqual(payload["reviewRows"][0]["billFile"], "insurance-one.pdf")
+        self.assertEqual(payload["reviewRows"][0]["reason"], "NO_MATCH")
 
     def test_process_endpoint_requires_receipts(self) -> None:
         response = self.client.post(

@@ -220,6 +220,7 @@ def run_processing_pipeline(
 
     processing_result = ProcessingResult(
         review_csv_path=review_csv_path,
+        review_rows=review_rows,
         bills_processed=len(bill_specs),
         bills_updated=len(accepted),
         rows_updated=rows_updated,

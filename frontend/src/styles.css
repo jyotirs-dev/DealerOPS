@@ -56,11 +56,14 @@ select {
   padding: 32px 24px 48px;
 }
 
-.workspace-grid {
+.workspace-frame {
   width: min(1440px, 100%);
   margin: 0 auto;
+  display: grid;
+  gap: 24px;
 }
 
+.app-nav,
 .control-panel,
 .preview-panel {
   backdrop-filter: blur(18px);
@@ -79,9 +82,16 @@ select {
   color: var(--accent-deep);
 }
 
+.app-nav {
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(360px, 0.9fr);
+  gap: 24px;
+  align-items: end;
+  padding: 24px;
+}
+
 .workspace-grid {
   display: grid;
-  grid-template-columns: 420px minmax(0, 1fr);
   gap: 24px;
 }
 
@@ -91,7 +101,7 @@ select {
 }
 
 .compact-header {
-  margin-bottom: 18px;
+  margin: 0;
   padding: 20px 22px;
   border-radius: 24px;
   background: var(--panel-strong);
@@ -114,6 +124,11 @@ select {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
+  padding: 10px;
+  border-radius: 24px;
+  background: rgba(255, 250, 243, 0.7);
+  border: 1px solid rgba(95, 62, 27, 0.08);
+  align-self: start;
 }
 
 .tab-button {
@@ -122,6 +137,7 @@ select {
   color: var(--muted);
   border-radius: 999px;
   padding: 12px 16px;
+  min-height: 52px;
   font-weight: 700;
   cursor: pointer;
   transition: transform 160ms ease, background 160ms ease;
@@ -138,7 +154,6 @@ select {
 }
 
 .tab-card {
-  margin-top: 18px;
   padding: 22px;
   border-radius: 24px;
   background: var(--panel-strong);
@@ -290,6 +305,37 @@ select {
   align-items: flex-start;
 }
 
+.preview-toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-items: flex-end;
+}
+
+.preview-switcher {
+  display: inline-flex;
+  gap: 8px;
+  padding: 6px;
+  border-radius: 999px;
+  background: rgba(95, 62, 27, 0.08);
+}
+
+.preview-toggle {
+  border: none;
+  border-radius: 999px;
+  padding: 10px 14px;
+  background: transparent;
+  color: var(--muted);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.preview-toggle.active {
+  background: #fffaf0;
+  color: var(--accent-deep);
+  box-shadow: 0 10px 20px rgba(82, 51, 22, 0.08);
+}
+
 .result-links {
   justify-content: flex-end;
 }
@@ -332,9 +378,71 @@ select {
   background: rgba(255, 252, 245, 0.8);
 }
 
+.review-screen {
+  padding: 24px;
+}
+
+.review-intro {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.review-table-shell {
+  margin-top: 18px;
+  overflow-x: auto;
+  border-radius: 20px;
+  border: 1px solid rgba(95, 62, 27, 0.08);
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.review-table {
+  width: 100%;
+  min-width: 920px;
+  border-collapse: collapse;
+}
+
+.review-table th,
+.review-table td {
+  padding: 14px 16px;
+  text-align: left;
+  vertical-align: top;
+  border-bottom: 1px solid rgba(95, 62, 27, 0.08);
+}
+
+.review-table th {
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  background: rgba(245, 237, 224, 0.92);
+}
+
+.review-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.review-cell-strong {
+  font-weight: 700;
+}
+
+.review-status-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 7px 11px;
+  border-radius: 999px;
+  background: rgba(161, 45, 31, 0.12);
+  color: var(--alert);
+  font-size: 0.88rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
 .grid-theme {
   width: 100%;
-  height: 680px;
+  height: min(78vh, 920px);
+  min-height: 680px;
   --ag-background-color: rgba(255, 252, 245, 0.84);
   --ag-header-background-color: #f5ede0;
   --ag-odd-row-background-color: rgba(13, 122, 100, 0.03);
@@ -357,7 +465,7 @@ select {
 }
 
 @media (max-width: 1120px) {
-  .workspace-grid {
+  .app-nav {
     grid-template-columns: 1fr;
   }
 }
@@ -367,6 +475,7 @@ select {
     padding: 20px 14px 36px;
   }
 
+  .app-nav,
   .control-panel,
   .preview-panel {
     padding: 20px;
@@ -381,7 +490,26 @@ select {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .preview-header,
+  .preview-toolbar {
+    align-items: stretch;
+  }
+
+  .preview-header {
+    flex-direction: column;
+  }
+
+  .preview-switcher {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .preview-toggle {
+    flex: 1;
+  }
+
   .grid-theme {
-    height: 540px;
+    height: min(72vh, 560px);
+    min-height: 520px;
   }
 }

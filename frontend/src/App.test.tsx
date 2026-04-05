@@ -157,6 +157,7 @@ describe("App", () => {
             multiMatch: 0,
             rowConflicts: 0,
           },
+          reviewRows: [],
           downloadUrl: "/download/job-1/sales_updated.xlsx",
           reviewCsvUrl: "/download/job-1/review_conflicts.csv",
         }),
@@ -189,6 +190,84 @@ describe("App", () => {
     );
     expect(screen.getByText("Rows updated")).toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("renders review rows with the reason they were not verified", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.mocked(fetch);
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          jobId: "job-2",
+          sheetTitle: "Vehicle Sales Register",
+          headerRow: [
+            "Invoice No.",
+            "Contact Name",
+            "Insurance",
+            "(RTO+ Agent fee 500)",
+          ],
+          rows: [
+            ["INV-1", "Ramesh Kumar", "", ""],
+            ["INV-2", "Suresh Sharma", "", ""],
+          ],
+          summary: {
+            billsProcessed: 1,
+            billsUpdated: 0,
+            rowsUpdated: 0,
+            billsReview: 1,
+            parseFailures: 0,
+            noMatch: 1,
+            multiMatch: 0,
+            rowConflicts: 0,
+          },
+          reviewRows: [
+            {
+              billType: "insurance",
+              billFile: "insurance-review.pdf",
+              extractedCustomer: "Unknown Person",
+              extractedAmount: "5400",
+              bestScore: "72.10",
+              candidateSalesRows: "row=2 score=72.10",
+              reason: "NO_MATCH",
+            },
+          ],
+          downloadUrl: "/download/job-2/sales_updated.xlsx",
+          reviewCsvUrl: "/download/job-2/review_conflicts.csv",
+        }),
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        blob: async () => new Blob(["updated workbook"]),
+      } as Response);
+
+    render(<App />);
+
+    await user.upload(
+      screen.getByLabelText(/upload excel workbook/i),
+      buildWorkbookFile(),
+    );
+    await user.click(screen.getByRole("tab", { name: /insurance files/i }));
+    await user.upload(
+      screen.getByLabelText(/upload insurance files/i),
+      new File(["insurance"], "insurance-review.pdf", { type: "application/pdf" }),
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: /process workbook/i }),
+    );
+
+    await waitFor(() =>
+      expect(screen.getByRole("tab", { name: /review rows/i })).toHaveAttribute(
+        "aria-selected",
+        "true",
+      ),
+    );
+    expect(screen.getByText("Not verified")).toBeInTheDocument();
+    expect(
+      screen.getByText("No matching sales row cleared the configured threshold."),
+    ).toBeInTheDocument();
+    expect(screen.getByText("insurance-review.pdf")).toBeInTheDocument();
   });
 
   it("renders API errors", async () => {

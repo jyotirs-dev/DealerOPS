@@ -27,17 +27,29 @@ type ProcessSummary = {
   rowConflicts: number;
 };
 
+type ReviewRow = {
+  billType: string;
+  billFile: string;
+  extractedCustomer: string;
+  extractedAmount: string;
+  bestScore: string;
+  candidateSalesRows: string;
+  reason: string;
+};
+
 type ProcessResponse = {
   jobId: string;
   sheetTitle: string;
   headerRow: string[];
   rows: Array<Array<string | number | boolean | null>>;
   summary: ProcessSummary;
+  reviewRows: ReviewRow[];
   downloadUrl: string;
   reviewCsvUrl: string;
 };
 
 type GridRow = Record<string, string | number | boolean | null>;
+type PreviewMode = "worksheet" | "review";
 
 const DEFAULT_SETTINGS: Settings = {
   customerLabels: "Insured, Insured Name, Received From",
@@ -61,6 +73,13 @@ const TAB_COPY: Record<ActiveTab, { title: string; hint: string }> = {
     title: "Insurance Files",
     hint: "Upload insurance PDFs or scans. The parser uses the advanced settings below when matching values.",
   },
+};
+
+const REVIEW_REASON_COPY: Record<string, string> = {
+  NO_MATCH: "No matching sales row cleared the configured threshold.",
+  MULTIPLE_SALES_ROWS: "Multiple sales rows matched the extracted customer.",
+  MULTIPLE_BILLS_FOR_ROW_TYPE:
+    "Multiple bills claimed the same sales row for this bill type.",
 };
 
 function buildGridModel(preview: WorkbookPreview | null): {
@@ -128,9 +147,35 @@ function renderFileList(files: File[]) {
   );
 }
 
+function formatReviewReasonSegment(reason: string): string {
+  const trimmedReason = reason.trim();
+  if (!trimmedReason) {
+    return "";
+  }
+
+  if (trimmedReason in REVIEW_REASON_COPY) {
+    return REVIEW_REASON_COPY[trimmedReason];
+  }
+
+  if (trimmedReason.startsWith("TEXT_EXTRACTION_ERROR:")) {
+    return trimmedReason.replace("TEXT_EXTRACTION_ERROR:", "Text extraction failed:");
+  }
+
+  return trimmedReason;
+}
+
+function formatReviewReason(reason: string): string {
+  return reason
+    .split(";")
+    .map((part) => formatReviewReasonSegment(part))
+    .filter(Boolean)
+    .join("; ");
+}
+
 export default function App() {
   const [activeTab, setActiveTab] = useState<ActiveTab>("sales");
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
+  const [previewMode, setPreviewMode] = useState<PreviewMode>("worksheet");
   const [workbookFile, setWorkbookFile] = useState<File | null>(null);
   const [workbookPreview, setWorkbookPreview] = useState<WorkbookPreview | null>(
     null,
@@ -143,6 +188,8 @@ export default function App() {
   const [isProcessing, setIsProcessing] = useState(false);
 
   const { columnDefs, rowData } = buildGridModel(workbookPreview);
+  const reviewRows = processResult?.reviewRows ?? [];
+  const hasReviewRows = reviewRows.length > 0;
   const canProcess =
     workbookFile !== null &&
     (rtoFiles.length > 0 || insuranceFiles.length > 0) &&
@@ -157,12 +204,14 @@ export default function App() {
         : workbookError
           ? "Workbook preview is unavailable, but you can still process the uploaded file."
           : "Ready to process the uploaded workbook.";
+  const tabs: ActiveTab[] = ["sales", "rto", "insurance"];
 
   async function handleWorkbookUpload(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0] ?? null;
     setWorkbookFile(file);
     setProcessResult(null);
     setProcessError(null);
+    setPreviewMode("worksheet");
 
     if (!file) {
       setWorkbookPreview(null);
@@ -220,8 +269,12 @@ export default function App() {
         throw new Error(payload?.error ?? "Processing failed.");
       }
 
-      const result = payload as ProcessResponse;
+      const result = {
+        ...((payload ?? {}) as Omit<ProcessResponse, "reviewRows">),
+        reviewRows: Array.isArray(payload?.reviewRows) ? payload.reviewRows : [],
+      } as ProcessResponse;
       setProcessResult(result);
+      setPreviewMode(result.reviewRows.length > 0 ? "review" : "worksheet");
       try {
         const workbookResponse = await fetch(result.downloadUrl);
         if (!workbookResponse.ok) {
@@ -256,8 +309,8 @@ export default function App() {
 
   return (
     <main className="app-shell">
-      <section className="workspace-grid">
-        <div className="control-panel">
+      <div className="workspace-frame">
+        <header className="app-nav">
           <div className="compact-header">
             <p className="eyebrow">Excel-first reconciliation</p>
             <h1>Workbook updater</h1>
@@ -273,7 +326,7 @@ export default function App() {
           </div>
 
           <div className="tab-strip" role="tablist" aria-label="Upload tabs">
-            {(["sales", "rto", "insurance"] as ActiveTab[]).map((tab) => (
+            {tabs.map((tab) => (
               <button
                 key={tab}
                 type="button"
@@ -286,232 +339,330 @@ export default function App() {
               </button>
             ))}
           </div>
+        </header>
 
-          <div className="tab-card">
-            <h2>{TAB_COPY[activeTab].title}</h2>
-            <p className="tab-hint">{TAB_COPY[activeTab].hint}</p>
+        <section className="workspace-grid">
+          <div className="control-panel">
+            <div className="tab-card">
+              <h2>{TAB_COPY[activeTab].title}</h2>
+              <p className="tab-hint">{TAB_COPY[activeTab].hint}</p>
 
-            {activeTab === "sales" && (
-              <div className="upload-stack">
-                <label className="field-label" htmlFor="workbook-upload">
-                  Upload Excel workbook
-                </label>
-                <input
-                  id="workbook-upload"
-                  name="workbook-upload"
-                  type="file"
-                  accept=".xlsx,.xlsm"
-                  onChange={handleWorkbookUpload}
-                />
-                <div className="status-chip-row">
-                  <span className="status-chip">
-                    Workbook: {workbookFile ? workbookFile.name : "Not loaded"}
-                  </span>
-                  <span className="status-chip">
-                    Sheet: {workbookPreview ? workbookPreview.sheetTitle : "Pending"}
-                  </span>
-                  <span className="status-chip">
-                    Rows: {workbookPreview ? workbookPreview.rows.length : 0}
-                  </span>
+              {activeTab === "sales" && (
+                <div className="upload-stack">
+                  <label className="field-label" htmlFor="workbook-upload">
+                    Upload Excel workbook
+                  </label>
+                  <input
+                    id="workbook-upload"
+                    name="workbook-upload"
+                    type="file"
+                    accept=".xlsx,.xlsm"
+                    onChange={handleWorkbookUpload}
+                  />
+                  <div className="status-chip-row">
+                    <span className="status-chip">
+                      Workbook: {workbookFile ? workbookFile.name : "Not loaded"}
+                    </span>
+                    <span className="status-chip">
+                      Sheet: {workbookPreview ? workbookPreview.sheetTitle : "Pending"}
+                    </span>
+                    <span className="status-chip">
+                      Rows: {workbookPreview ? workbookPreview.rows.length : 0}
+                    </span>
+                  </div>
+                  {workbookError ? (
+                    <p className="error-banner" role="alert">
+                      {workbookError}
+                    </p>
+                  ) : null}
                 </div>
-                {workbookError ? (
-                  <p className="error-banner" role="alert">
-                    {workbookError}
-                  </p>
-                ) : null}
-              </div>
-            )}
+              )}
 
-            {activeTab === "rto" && (
-              <div className="upload-stack">
-                <label className="field-label" htmlFor="rto-upload">
-                  Upload RTO receipts
-                </label>
-                <input
-                  id="rto-upload"
-                  name="rto-upload"
-                  type="file"
-                  accept=".pdf,.png,.jpg,.jpeg,.tif,.tiff,.bmp,.webp"
-                  multiple
-                  onChange={(event) => setRtoFiles(fileListToArray(event.target.files))}
-                />
-                <span className="status-chip">{rtoFiles.length} files selected</span>
-                {renderFileList(rtoFiles)}
-              </div>
-            )}
+              {activeTab === "rto" && (
+                <div className="upload-stack">
+                  <label className="field-label" htmlFor="rto-upload">
+                    Upload RTO receipts
+                  </label>
+                  <input
+                    id="rto-upload"
+                    name="rto-upload"
+                    type="file"
+                    accept=".pdf,.png,.jpg,.jpeg,.tif,.tiff,.bmp,.webp"
+                    multiple
+                    onChange={(event) =>
+                      setRtoFiles(fileListToArray(event.target.files))
+                    }
+                  />
+                  <span className="status-chip">{rtoFiles.length} files selected</span>
+                  {renderFileList(rtoFiles)}
+                </div>
+              )}
 
-            {activeTab === "insurance" && (
-              <div className="upload-stack">
-                <label className="field-label" htmlFor="insurance-upload">
-                  Upload insurance files
-                </label>
-                <input
-                  id="insurance-upload"
-                  name="insurance-upload"
-                  type="file"
-                  accept=".pdf,.png,.jpg,.jpeg,.tif,.tiff,.bmp,.webp"
-                  multiple
-                  onChange={(event) =>
-                    setInsuranceFiles(fileListToArray(event.target.files))
-                  }
-                />
-                <span className="status-chip">
-                  {insuranceFiles.length} files selected
-                </span>
-                {renderFileList(insuranceFiles)}
-              </div>
-            )}
-          </div>
-
-          <details className="advanced-panel">
-            <summary>Advanced parser settings</summary>
-            <div className="advanced-grid">
-              <label>
-                Customer labels
-                <input
-                  type="text"
-                  value={settings.customerLabels}
-                  onChange={(event) =>
-                    handleSettingsChange("customerLabels", event.target.value)
-                  }
-                />
-              </label>
-              <label>
-                Amount labels
-                <input
-                  type="text"
-                  value={settings.amountLabels}
-                  onChange={(event) =>
-                    handleSettingsChange("amountLabels", event.target.value)
-                  }
-                />
-              </label>
-              <label>
-                Amount position
-                <select
-                  value={settings.amountPosition}
-                  onChange={(event) =>
-                    handleSettingsChange(
-                      "amountPosition",
-                      event.target.value as Settings["amountPosition"],
-                    )
-                  }
-                >
-                  <option value="same_line">On same line as label</option>
-                  <option value="next_line">On next line after label</option>
-                </select>
-              </label>
-              <label>
-                Name threshold
-                <input
-                  type="number"
-                  min="0"
-                  max="100"
-                  step="0.1"
-                  value={settings.nameThreshold}
-                  onChange={(event) =>
-                    handleSettingsChange("nameThreshold", event.target.value)
-                  }
-                />
-              </label>
-              <label className="checkbox-field">
-                <input
-                  type="checkbox"
-                  checked={settings.clearExisting}
-                  onChange={(event) =>
-                    handleSettingsChange("clearExisting", event.target.checked)
-                  }
-                />
-                Clear existing Insurance / RTO values before writing matches
-              </label>
+              {activeTab === "insurance" && (
+                <div className="upload-stack">
+                  <label className="field-label" htmlFor="insurance-upload">
+                    Upload insurance files
+                  </label>
+                  <input
+                    id="insurance-upload"
+                    name="insurance-upload"
+                    type="file"
+                    accept=".pdf,.png,.jpg,.jpeg,.tif,.tiff,.bmp,.webp"
+                    multiple
+                    onChange={(event) =>
+                      setInsuranceFiles(fileListToArray(event.target.files))
+                    }
+                  />
+                  <span className="status-chip">
+                    {insuranceFiles.length} files selected
+                  </span>
+                  {renderFileList(insuranceFiles)}
+                </div>
+              )}
             </div>
-          </details>
 
-          <div className="action-row">
-            <button
-              type="button"
-              className="primary-button"
-              onClick={handleProcess}
-              disabled={!canProcess}
-            >
-              {isProcessing ? "Processing workbook..." : "Process workbook"}
-            </button>
-            <p className="process-note">
-              {readinessMessage}
-            </p>
-            <p className="process-note">
-              Downloaded workbook is the v1 output. Google Sheets export is intentionally deferred.
-            </p>
-          </div>
-
-          {processError ? (
-            <p className="error-banner" role="alert">
-              {processError}
-            </p>
-          ) : null}
-        </div>
-
-        <div className="preview-panel">
-          <div className="preview-header">
-            <div>
-              <p className="eyebrow">Worksheet preview</p>
-              <h2>{workbookPreview ? workbookPreview.sheetTitle : "Awaiting workbook"}</h2>
-            </div>
-            {processResult ? (
-              <div className="result-links">
-                <a href={processResult.downloadUrl}>Download updated workbook</a>
-                <a href={processResult.reviewCsvUrl}>Download review CSV</a>
+            <details className="advanced-panel">
+              <summary>Advanced parser settings</summary>
+              <div className="advanced-grid">
+                <label>
+                  Customer labels
+                  <input
+                    type="text"
+                    value={settings.customerLabels}
+                    onChange={(event) =>
+                      handleSettingsChange("customerLabels", event.target.value)
+                    }
+                  />
+                </label>
+                <label>
+                  Amount labels
+                  <input
+                    type="text"
+                    value={settings.amountLabels}
+                    onChange={(event) =>
+                      handleSettingsChange("amountLabels", event.target.value)
+                    }
+                  />
+                </label>
+                <label>
+                  Amount position
+                  <select
+                    value={settings.amountPosition}
+                    onChange={(event) =>
+                      handleSettingsChange(
+                        "amountPosition",
+                        event.target.value as Settings["amountPosition"],
+                      )
+                    }
+                  >
+                    <option value="same_line">On same line as label</option>
+                    <option value="next_line">On next line after label</option>
+                  </select>
+                </label>
+                <label>
+                  Name threshold
+                  <input
+                    type="number"
+                    min="0"
+                    max="100"
+                    step="0.1"
+                    value={settings.nameThreshold}
+                    onChange={(event) =>
+                      handleSettingsChange("nameThreshold", event.target.value)
+                    }
+                  />
+                </label>
+                <label className="checkbox-field">
+                  <input
+                    type="checkbox"
+                    checked={settings.clearExisting}
+                    onChange={(event) =>
+                      handleSettingsChange("clearExisting", event.target.checked)
+                    }
+                  />
+                  Clear existing Insurance / RTO values before writing matches
+                </label>
               </div>
+            </details>
+
+            <div className="action-row">
+              <button
+                type="button"
+                className="primary-button"
+                onClick={handleProcess}
+                disabled={!canProcess}
+              >
+                {isProcessing ? "Processing workbook..." : "Process workbook"}
+              </button>
+              <p className="process-note">{readinessMessage}</p>
+              <p className="process-note">
+                Downloaded workbook is the v1 output. Google Sheets export is
+                intentionally deferred.
+              </p>
+            </div>
+
+            {processError ? (
+              <p className="error-banner" role="alert">
+                {processError}
+              </p>
             ) : null}
           </div>
 
-          {processResult ? (
-            <div className="summary-grid">
-              <article>
-                <span>Total bills</span>
-                <strong>{processResult.summary.billsProcessed}</strong>
-              </article>
-              <article>
-                <span>Values updated</span>
-                <strong>{processResult.summary.billsUpdated}</strong>
-              </article>
-              <article>
-                <span>Rows updated</span>
-                <strong>{processResult.summary.rowsUpdated}</strong>
-              </article>
-              <article>
-                <span>Review rows</span>
-                <strong>{processResult.summary.billsReview}</strong>
-              </article>
+          <div className="preview-panel">
+            <div className="preview-header">
+              <div>
+                <p className="eyebrow">
+                  {previewMode === "review" && hasReviewRows
+                    ? "Review verification"
+                    : "Worksheet preview"}
+                </p>
+                <h2>
+                  {previewMode === "review" && hasReviewRows
+                    ? `${reviewRows.length} rows were not verified`
+                    : workbookPreview
+                      ? workbookPreview.sheetTitle
+                      : "Awaiting workbook"}
+                </h2>
+              </div>
+
+              <div className="preview-toolbar">
+                {hasReviewRows ? (
+                  <div className="preview-switcher" role="tablist" aria-label="Preview views">
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={previewMode === "worksheet"}
+                      className={
+                        previewMode === "worksheet"
+                          ? "preview-toggle active"
+                          : "preview-toggle"
+                      }
+                      onClick={() => setPreviewMode("worksheet")}
+                    >
+                      Worksheet
+                    </button>
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={previewMode === "review"}
+                      className={
+                        previewMode === "review"
+                          ? "preview-toggle active"
+                          : "preview-toggle"
+                      }
+                      onClick={() => setPreviewMode("review")}
+                    >
+                      Review rows
+                    </button>
+                  </div>
+                ) : null}
+
+                {processResult ? (
+                  <div className="result-links">
+                    <a href={processResult.downloadUrl}>Download updated workbook</a>
+                    <a href={processResult.reviewCsvUrl}>Download review CSV</a>
+                  </div>
+                ) : null}
+              </div>
             </div>
-          ) : null}
 
-          <div className="preview-meta">
-            <span>{workbookPreview ? `${workbookPreview.headerRow.length} columns` : "0 columns"}</span>
-            <span>{workbookPreview ? `${workbookPreview.rows.length} data rows` : "0 data rows"}</span>
-            <span>{rtoFiles.length + insuranceFiles.length} receipt files loaded</span>
-          </div>
+            {processResult ? (
+              <div className="summary-grid">
+                <article>
+                  <span>Total bills</span>
+                  <strong>{processResult.summary.billsProcessed}</strong>
+                </article>
+                <article>
+                  <span>Values updated</span>
+                  <strong>{processResult.summary.billsUpdated}</strong>
+                </article>
+                <article>
+                  <span>Rows updated</span>
+                  <strong>{processResult.summary.rowsUpdated}</strong>
+                </article>
+                <article>
+                  <span>Review rows</span>
+                  <strong>{processResult.summary.billsReview}</strong>
+                </article>
+              </div>
+            ) : null}
 
-          <div className="grid-shell" aria-label="sheet preview">
-            {workbookPreview ? (
-              <div className="ag-theme-quartz grid-theme">
-                <AgGridReact<GridRow>
-                  theme="legacy"
-                  rowData={rowData}
-                  columnDefs={columnDefs}
-                  animateRows
-                  pagination
-                  paginationPageSize={25}
-                />
-              </div>
-            ) : (
-              <div className="empty-grid">
-                Upload an Excel workbook to preview the worksheet grid.
-              </div>
-            )}
+            <div className="preview-meta">
+              <span>
+                {workbookPreview
+                  ? `${workbookPreview.headerRow.length} columns`
+                  : "0 columns"}
+              </span>
+              <span>
+                {workbookPreview
+                  ? `${workbookPreview.rows.length} data rows`
+                  : "0 data rows"}
+              </span>
+              <span>{rtoFiles.length + insuranceFiles.length} receipt files loaded</span>
+              {processResult ? <span>{reviewRows.length} review rows flagged</span> : null}
+            </div>
+
+            <div
+              className="grid-shell"
+              aria-label={previewMode === "review" ? "review rows" : "sheet preview"}
+            >
+              {previewMode === "review" && hasReviewRows ? (
+                <div className="review-screen">
+                  <p className="review-intro">
+                    These rows were excluded from automatic updates because the
+                    verification step could not confirm them confidently.
+                  </p>
+                  <div className="review-table-shell">
+                    <table className="review-table">
+                      <thead>
+                        <tr>
+                          <th scope="col">Bill</th>
+                          <th scope="col">Type</th>
+                          <th scope="col">Extracted customer</th>
+                          <th scope="col">Amount</th>
+                          <th scope="col">Verification</th>
+                          <th scope="col">Reason</th>
+                          <th scope="col">Candidates</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {reviewRows.map((row) => (
+                          <tr key={`${row.billType}-${row.billFile}-${row.reason}`}>
+                            <td className="review-cell-strong">{row.billFile}</td>
+                            <td>{row.billType}</td>
+                            <td>{row.extractedCustomer || "Not found"}</td>
+                            <td>{row.extractedAmount || "Not found"}</td>
+                            <td>
+                              <span className="review-status-pill">Not verified</span>
+                            </td>
+                            <td>{formatReviewReason(row.reason)}</td>
+                            <td>{row.candidateSalesRows || row.bestScore || "None"}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              ) : workbookPreview ? (
+                <div className="ag-theme-quartz grid-theme">
+                  <AgGridReact<GridRow>
+                    theme="legacy"
+                    rowData={rowData}
+                    columnDefs={columnDefs}
+                    animateRows
+                    pagination
+                    paginationPageSize={20}
+                  />
+                </div>
+              ) : (
+                <div className="empty-grid">
+                  Upload an Excel workbook to preview the worksheet grid.
+                </div>
+              )}
+            </div>
           </div>
-        </div>
-      </section>
+        </section>
+      </div>
     </main>
   );
 }

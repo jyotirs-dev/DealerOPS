@@ -157,6 +157,7 @@ class ProcessingResult:
     """
 
     review_csv_path: Path
+    review_rows: list[ReviewRow]
     bills_processed: int
     bills_updated: int
     rows_updated: int

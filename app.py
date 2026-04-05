@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import uuid
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -142,6 +143,21 @@ def _summary_payload(result: ProcessingResult) -> dict[str, Any]:
     }
 
 
+def _review_rows_payload(result: ProcessingResult) -> list[dict[str, Any]]:
+    return [
+        {
+            "billType": row["bill_type"],
+            "billFile": row["bill_file"],
+            "extractedCustomer": row["extracted_customer"],
+            "extractedAmount": row["extracted_amount"],
+            "bestScore": row["best_score"],
+            "candidateSalesRows": row["candidate_sales_rows"],
+            "reason": row["reason"],
+        }
+        for row in (asdict(review_row) for review_row in result.review_rows)
+    ]
+
+
 def _frontend_index_response():
     index_path = FRONTEND_DIST / "index.html"
     if index_path.exists():
@@ -250,6 +266,7 @@ def process_files():  # type: ignore[no-untyped-def]
             "headerRow": header_row,
             "rows": rows,
             "summary": _summary_payload(result),
+            "reviewRows": _review_rows_payload(result),
             "downloadUrl": f"/download/{job_id}/{updated_workbook_name}",
             "reviewCsvUrl": (
                 f"/download/{job_id}/{result.review_csv_path.name}"

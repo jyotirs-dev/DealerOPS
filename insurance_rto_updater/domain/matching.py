@@ -28,7 +28,7 @@ from __future__ import annotations
 from difflib import SequenceMatcher
 from typing import Iterable
 
-from insurance_rto_updater.domain.normalization import normalize_text
+from insurance_rto_updater.domain.normalization import normalize_customer_name
 from insurance_rto_updater.models import SalesRow
 
 # rapidfuzz is optional but strongly recommended for production use.
@@ -55,7 +55,7 @@ def score_all_candidates(
     sales_rows:
         All sales rows loaded from the Google Sheet.
     """
-    query_norm = normalize_text(extracted_customer)
+    query_norm = normalize_customer_name(extracted_customer)
     query_tokens = set(query_norm.split())
     scored: list[tuple[SalesRow, float]] = []
 

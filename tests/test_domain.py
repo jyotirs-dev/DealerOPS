@@ -9,7 +9,10 @@ from __future__ import annotations
 import unittest
 from decimal import Decimal
 
-from insurance_rto_updater.domain.normalization import normalize_text
+from insurance_rto_updater.domain.normalization import (
+    normalize_customer_name,
+    normalize_text,
+)
 from insurance_rto_updater.domain.matching import score_all_candidates, serialize_candidates
 from insurance_rto_updater.domain.assignment import (
     assign_bill_to_row,
@@ -33,6 +36,12 @@ class NormalizationTests(unittest.TestCase):
     def test_collapses_whitespace(self):
         self.assertEqual(normalize_text("a    b   c"), "a b c")
 
+    def test_normalize_customer_name_strips_relationship_suffix(self):
+        self.assertEqual(
+            normalize_customer_name("BADARASINGH C/O NAGUSINGH"),
+            "badarasingh",
+        )
+
 
 class MatchingTests(unittest.TestCase):
     """Tests for fuzzy name scoring."""
@@ -42,7 +51,7 @@ class MatchingTests(unittest.TestCase):
             SalesRow(
                 row_index=i + 2,
                 customer_raw=name,
-                customer_norm=normalize_text(name),
+                customer_norm=normalize_customer_name(name),
             )
             for i, name in enumerate(names)
         ]
@@ -57,6 +66,18 @@ class MatchingTests(unittest.TestCase):
     def test_no_rows_returns_empty(self):
         scored = score_all_candidates("ANSHU", [])
         self.assertEqual(scored, [])
+
+    def test_relationship_suffix_in_sales_row_does_not_block_match(self):
+        rows = self._make_sales_rows(
+            [
+                "BADARASINGH C/O NAGUSINGH",
+                "MANGU SINGH S/O RAM SINGH JI",
+                "AANNAD SINGH S/O NEN SINGH",
+            ]
+        )
+        scored = score_all_candidates("BADARA SINGH", rows)
+        self.assertEqual(scored[0][0].customer_raw, "BADARASINGH C/O NAGUSINGH")
+        self.assertGreaterEqual(scored[0][1], 95.0)
 
     def test_serialize_candidates_format(self):
         rows = self._make_sales_rows(["ABC"])
@@ -83,7 +104,7 @@ class AssignmentTests(unittest.TestCase):
             SalesRow(
                 row_index=i + 2,
                 customer_raw=name,
-                customer_norm=normalize_text(name),
+                customer_norm=normalize_customer_name(name),
             )
             for i, name in enumerate(names)
         ]
@@ -101,6 +122,18 @@ class AssignmentTests(unittest.TestCase):
         result = assign_bill_to_row(bill, rows, name_threshold=95.0)
         self.assertIsInstance(result, ReviewRow)
         self.assertEqual(result.reason, "NO_MATCH")
+
+    def test_sheet_relationship_suffix_still_allows_assignment(self):
+        bill = self._make_bill("BADARA SINGH")
+        rows = self._make_sales_rows(
+            [
+                "BADARASINGH C/O NAGUSINGH",
+                "MANGU SINGH S/O RAM SINGH JI",
+            ]
+        )
+        result = assign_bill_to_row(bill, rows, name_threshold=95.0)
+        self.assertIsInstance(result, Assignment)
+        self.assertEqual(result.row_index, 2)
 
     def test_detect_row_conflicts_accepts_unique(self):
         assignments = [

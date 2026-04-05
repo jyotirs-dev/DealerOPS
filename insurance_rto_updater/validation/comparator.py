@@ -12,7 +12,10 @@ All functions are **side-effect-free** and trivially testable.
 """
 from __future__ import annotations
 
-from insurance_rto_updater.domain.normalization import normalize_text
+from insurance_rto_updater.domain.normalization import (
+    normalize_customer_name,
+    normalize_text,
+)
 from insurance_rto_updater.models import (
     Assignment,
     CellValueUpdate,
@@ -93,7 +96,7 @@ def build_sales_rows(
             SalesRow(
                 row_index=row_idx,
                 customer_raw=customer_raw,
-                customer_norm=normalize_text(customer_raw),
+                customer_norm=normalize_customer_name(customer_raw),
             )
         )
     max_row = len(data_rows) + 1

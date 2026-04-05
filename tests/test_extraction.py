@@ -30,6 +30,28 @@ class ExtractCustomerTests(unittest.TestCase):
         self.assertIsNone(error)
         self.assertEqual(customer, "Suresh Sharma")
 
+    def test_strips_relationship_suffixes_on_same_line(self):
+        cases = [
+            ("Insured: VIRENDRA VALIYA S/O GIRDHARI", "VIRENDRA VALIYA"),
+            ("Insured: VIRENDRA C/O KANHAIYALAL", "VIRENDRA"),
+            ("Insured: KRISHNA BAI W/O SACHIN PARIHAR", "KRISHNA BAI"),
+        ]
+
+        for line, expected in cases:
+            with self.subTest(line=line):
+                customer, error = extract_customer(
+                    f"{line}\nAmount: 1000",
+                    ["Insured"],
+                )
+                self.assertIsNone(error)
+                self.assertEqual(customer, expected)
+
+    def test_strips_relationship_suffixes_on_next_line(self):
+        text = "Received From:\nVIRENDRA C/O KANHAIYALAL\nAmount: 3000"
+        customer, error = extract_customer(text, ["Received From"])
+        self.assertIsNone(error)
+        self.assertEqual(customer, "VIRENDRA")
+
     def test_returns_error_for_empty_text(self):
         customer, error = extract_customer("", ["Insured"])
         self.assertIsNone(customer)

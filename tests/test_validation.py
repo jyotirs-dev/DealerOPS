@@ -52,13 +52,14 @@ class BuildSalesRowsTests(unittest.TestCase):
 
     def test_builds_rows_with_customer_values(self):
         data_rows = [
-            ["ANSHU SINGH", "", ""],
+            ["BADARASINGH C/O NAGUSINGH", "", ""],
             ["", "", ""],  # empty customer — should be skipped
             ["OTHER", "", ""],
         ]
         rows, max_row = build_sales_rows(data_rows, customer_col=1)
         self.assertEqual(len(rows), 2)
-        self.assertEqual(rows[0].customer_raw, "ANSHU SINGH")
+        self.assertEqual(rows[0].customer_raw, "BADARASINGH C/O NAGUSINGH")
+        self.assertEqual(rows[0].customer_norm, "badarasingh")
         self.assertEqual(rows[0].row_index, 2)
         self.assertEqual(rows[1].row_index, 4)
         self.assertEqual(max_row, 4)

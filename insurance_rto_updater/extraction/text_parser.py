@@ -178,7 +178,8 @@ _BLOCKED_WORDS = frozenset({
     "insured", "liability", "indemnified", "notice", "sum", "unnamed",
     "received", "thanks", "against", "receipt", "company", "stamp",
     "duty", "bank", "business", "profession", "address", "period",
-    "office", "important", "clause", "headed", "see",
+    "office", "important", "clause", "headed", "see", "amount", "total",
+    "grand", "date", "vehicle", "registration", "motor", "number",
 })
 
 # Generic stop words that alone do not constitute a name.
@@ -205,7 +206,9 @@ def _is_likely_customer_name(value: str) -> bool:
         return False
 
     words = compact.lower().split()
-    if len(words) < 2 or len(words) > 6:
+    if len(words) < 1 or len(words) > 6:
+        return False
+    if len(words) == 1 and len(words[0]) < 3:
         return False
     if any(len(word) < 2 for word in words):
         return False

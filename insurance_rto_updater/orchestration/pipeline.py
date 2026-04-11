@@ -30,6 +30,7 @@ from insurance_rto_updater.extraction.file_router import extract_text_from_file
 from insurance_rto_updater.extraction.text_parser import (
     extract_customer,
     extract_final_amount,
+    extract_insurance_report_rows,
 )
 from insurance_rto_updater.models import (
     BillParseResult,
@@ -50,25 +51,32 @@ from insurance_rto_updater.validation.comparator import (
 # Internal: extract + parse a single bill
 # ---------------------------------------------------------------------------
 
-def _parse_single_bill(
+def _parse_bill_entries(
     bill_type: str,
     path: Path,
     config: ProcessingConfig,
-) -> BillParseResult:
+) -> list[BillParseResult]:
     """
-    Extract text from a bill file and parse its customer + amount fields.
+    Extract text from a bill file and parse one or more bill entries.
 
-    Returns a ``BillParseResult`` that is always populated — on failure
-    the error fields are set and the data fields are ``None``.
+    Standard insurance / RTO uploads yield a single ``BillParseResult``.
+    Insurance MIS reports may yield multiple per-customer results.
     """
     try:
         raw_text = extract_text_from_file(path)
     except Exception as exc:
-        return BillParseResult(
-            bill_type=bill_type,
-            file_name=path.name,
-            extraction_error=f"TEXT_EXTRACTION_ERROR: {exc}",
-        )
+        return [
+            BillParseResult(
+                bill_type=bill_type,
+                file_name=path.name,
+                extraction_error=f"TEXT_EXTRACTION_ERROR: {exc}",
+            )
+        ]
+
+    if bill_type == "insurance":
+        report_rows = extract_insurance_report_rows(raw_text, path.name)
+        if report_rows is not None:
+            return report_rows
 
     customer_name, customer_error = extract_customer(
         raw_text, config.customer_labels
@@ -77,15 +85,17 @@ def _parse_single_bill(
         raw_text, config.amount_labels, config.amount_position
     )
 
-    return BillParseResult(
-        bill_type=bill_type,
-        file_name=path.name,
-        raw_text=raw_text,
-        customer_name=customer_name,
-        amount=amount,
-        customer_error=customer_error,
-        amount_error=amount_error,
-    )
+    return [
+        BillParseResult(
+            bill_type=bill_type,
+            file_name=path.name,
+            raw_text=raw_text,
+            customer_name=customer_name,
+            amount=amount,
+            customer_error=customer_error,
+            amount_error=amount_error,
+        )
+    ]
 
 
 def _bill_to_review_row(bill: BillParseResult) -> ReviewRow:
@@ -167,45 +177,47 @@ def run_processing_pipeline(
     # Steps 3–4: extract, parse, and assign each bill.
     review_rows: list[ReviewRow] = []
     assignments: list[Assignment] = []
+    bills_processed = 0
     parse_failures = 0
     no_match = 0
     multi_match = 0
 
     for bill_type, path in bill_specs:
-        bill = _parse_single_bill(bill_type, path, config)
+        for bill in _parse_bill_entries(bill_type, path, config):
+            bills_processed += 1
 
-        # If extraction or parsing failed, send straight to review.
-        if bill.extraction_error or bill.amount_error:
-            parse_failures += 1
-            review_rows.append(_bill_to_review_row(bill))
-            continue
+            # If extraction or parsing failed, send straight to review.
+            if bill.extraction_error or bill.amount_error:
+                parse_failures += 1
+                review_rows.append(_bill_to_review_row(bill))
+                continue
 
-        if bill.customer_error:
-            if bill.customer_error == "CUSTOMER_LABEL_NOT_FOUND":
-                filename_assignment = assign_bill_to_row_by_filename_first_name(
-                    bill,
-                    sales_rows,
-                )
-                if filename_assignment is not None:
-                    assignments.append(filename_assignment)
-                    continue
+            if bill.customer_error:
+                if bill.customer_error == "CUSTOMER_LABEL_NOT_FOUND":
+                    filename_assignment = assign_bill_to_row_by_filename_first_name(
+                        bill,
+                        sales_rows,
+                    )
+                    if filename_assignment is not None:
+                        assignments.append(filename_assignment)
+                        continue
 
-            parse_failures += 1
-            review_rows.append(_bill_to_review_row(bill))
-            continue
+                parse_failures += 1
+                review_rows.append(_bill_to_review_row(bill))
+                continue
 
-        # Attempt to assign this bill to a sheet row.
-        result = assign_bill_to_row(bill, sales_rows, config.name_threshold)
+            # Attempt to assign this bill to a sheet row.
+            result = assign_bill_to_row(bill, sales_rows, config.name_threshold)
 
-        if isinstance(result, Assignment):
-            assignments.append(result)
-        else:
-            # result is a ReviewRow — track the specific failure type.
-            if result.reason == "NO_MATCH":
-                no_match += 1
-            elif result.reason == "MULTIPLE_SALES_ROWS":
-                multi_match += 1
-            review_rows.append(result)
+            if isinstance(result, Assignment):
+                assignments.append(result)
+            else:
+                # result is a ReviewRow — track the specific failure type.
+                if result.reason == "NO_MATCH":
+                    no_match += 1
+                elif result.reason == "MULTIPLE_SALES_ROWS":
+                    multi_match += 1
+                review_rows.append(result)
 
     # Step 5: detect row-level conflicts (multiple bills → same row+type).
     accepted, conflict_reviews = detect_row_conflicts(assignments)
@@ -241,7 +253,7 @@ def run_processing_pipeline(
     processing_result = ProcessingResult(
         review_csv_path=review_csv_path,
         review_rows=review_rows,
-        bills_processed=len(bill_specs),
+        bills_processed=bills_processed,
         bills_updated=len(writable_assignments),
         rows_updated=rows_updated,
         bills_review=len(review_rows),

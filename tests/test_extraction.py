@@ -12,7 +12,64 @@ from decimal import Decimal
 from insurance_rto_updater.extraction.text_parser import (
     extract_customer,
     extract_final_amount,
+    extract_insurance_report_rows,
 )
+
+INSURANCE_REPORT_TEXT = """MIS BUSINESS REPORT USER WISE
+
+S.No.
+User Name
+Policy
+Type
+Policy Number
+Customer
+Name
+Start
+Date
+OD
+Premium
+NCB
+ND
+Cover
+RTI
+Cover
+RSA
+addons
+Gross
+Premium
+1.
+MAHENDRA61835
+N
+993792623750035786
+VIRENDRA
+VALIYA
+2/2/2026
+8:00:28
+PM
+851
+0
+YES
+NO
+NO
+5548
+2.
+MAHENDRA61835
+N
+993792623750039494 IMAM SHAH
+2/6/2026
+5:12:13
+PM
+802
+0
+YES
+NO
+NO
+5491
+Total
+1653
+0
+11039
+"""
 
 
 class ExtractCustomerTests(unittest.TestCase):
@@ -101,6 +158,30 @@ class ExtractAmountEdgeCasesTests(unittest.TestCase):
         amount, error = extract_final_amount(text, ["Grand Total"], "same_line")
         self.assertIsNone(error)
         self.assertEqual(amount, Decimal("5049.50"))
+
+
+class InsuranceReportExtractionTests(unittest.TestCase):
+    """Tests for parsing multi-row insurance MIS reports."""
+
+    def test_extracts_customer_rows_from_insurance_report(self):
+        rows = extract_insurance_report_rows(INSURANCE_REPORT_TEXT, "report.pdf")
+        self.assertIsNotNone(rows)
+        assert rows is not None
+
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0].file_name, "report.pdf [S.No. 1]")
+        self.assertEqual(rows[0].customer_name, "VIRENDRA VALIYA")
+        self.assertEqual(rows[0].amount, Decimal("5548"))
+        self.assertEqual(rows[1].file_name, "report.pdf [S.No. 2]")
+        self.assertEqual(rows[1].customer_name, "IMAM SHAH")
+        self.assertEqual(rows[1].amount, Decimal("5491"))
+
+    def test_returns_none_for_standard_insurance_bill_text(self):
+        rows = extract_insurance_report_rows(
+            "Insured: Ramesh Kumar\nGrand Total: 5400",
+            "bill.pdf",
+        )
+        self.assertIsNone(rows)
 
 
 if __name__ == "__main__":

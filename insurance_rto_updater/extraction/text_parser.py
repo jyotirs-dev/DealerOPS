@@ -30,6 +30,7 @@ from decimal import Decimal, InvalidOperation
 from difflib import SequenceMatcher
 
 from insurance_rto_updater.domain.normalization import normalize_text
+from insurance_rto_updater.models import BillParseResult
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +41,17 @@ logger = logging.getLogger(__name__)
 # Matches Indian-style currency amounts: 1,00,000 or 12345 or 1,234.56
 AMOUNT_RE = re.compile(
     r"(?<!\d)(?:\d{1,3}(?:,\d{2,3})+|\d+)(?:\.\d{1,2})?(?!\d)"
+)
+_SERIAL_LINE_RE = re.compile(r"^\d+\.$")
+_DATE_LINE_RE = re.compile(r"^\d{1,2}/\d{1,2}/\d{4}$")
+_POLICY_NUMBER_LINE_RE = re.compile(
+    r"^(?P<policy_number>\d{10,})(?:\s+(?P<customer>.*\S))?$"
+)
+_WHOLE_AMOUNT_LINE_RE = re.compile(r"^\$?\d[\d,]*(?:\.\d{1,2})?$")
+_INSURANCE_REPORT_MARKERS = (
+    "mis business report user wise",
+    "policy number",
+    "gross premium",
 )
 
 # ---------------------------------------------------------------------------
@@ -103,6 +115,11 @@ def _sanitize_customer_text(value: str) -> str:
     value = re.sub(r"[\t\r\n]+", " ", value)
     value = re.sub(r"^[\s:\-]+", "", value)
     return " ".join(value.split())
+
+
+def _clean_report_line(value: str) -> str:
+    """Normalize whitespace in a PDF-extracted report line."""
+    return " ".join(value.replace("\xa0", " ").split())
 
 def _parse_customer_tail(line: str, label: str) -> str:
     """
@@ -244,6 +261,64 @@ def _extract_amount_candidates(text: str) -> list[Decimal]:
     return candidates
 
 
+def _looks_like_insurance_report(text: str) -> bool:
+    """Return ``True`` when the text matches the MIS insurance report layout."""
+    normalized = normalize_text(text.replace("\xa0", " "))
+    return all(marker in normalized for marker in _INSURANCE_REPORT_MARKERS)
+
+
+def _build_report_row_file_name(file_name: str, serial_number: str) -> str:
+    """Tag review/update rows with the source file and report serial number."""
+    return f"{file_name} [S.No. {serial_number}]"
+
+
+def _extract_report_customer_name(record_lines: list[str], date_idx: int) -> str:
+    """Extract the customer-name segment from one insurance report record."""
+    policy_idx = next(
+        (
+            idx
+            for idx, line in enumerate(record_lines[1:date_idx], start=1)
+            if _POLICY_NUMBER_LINE_RE.match(line)
+        ),
+        None,
+    )
+    if policy_idx is None:
+        return ""
+
+    policy_match = _POLICY_NUMBER_LINE_RE.match(record_lines[policy_idx])
+    assert policy_match is not None
+
+    customer_parts: list[str] = []
+    inline_customer = (policy_match.group("customer") or "").strip()
+    if inline_customer:
+        customer_parts.append(inline_customer)
+    customer_parts.extend(record_lines[policy_idx + 1:date_idx])
+
+    cleaned_parts: list[str] = []
+    for part in customer_parts:
+        cleaned = _sanitize_customer_text(part)
+        cleaned = re.sub(r"\s*\.+\s*$", "", cleaned)
+        if cleaned:
+            cleaned_parts.append(cleaned)
+
+    return _refine_customer_name(" ".join(cleaned_parts))
+
+
+def _extract_report_gross_premium(record_lines: list[str], date_idx: int) -> Decimal | None:
+    """Return the gross premium from one insurance report record."""
+    for line in reversed(record_lines[date_idx + 1:]):
+        cleaned = _clean_report_line(line).lstrip("$")
+        if not _WHOLE_AMOUNT_LINE_RE.match(cleaned):
+            continue
+        try:
+            amount = Decimal(cleaned.replace(",", ""))
+        except InvalidOperation:
+            continue
+        if amount >= Decimal("10"):
+            return amount
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -341,6 +416,108 @@ def extract_customer(
         return best, None
 
     return None, "MULTIPLE_CUSTOMER_CANDIDATES"
+
+
+def extract_insurance_report_rows(
+    text: str,
+    file_name: str,
+) -> list[BillParseResult] | None:
+    """
+    Parse a multi-row insurance MIS report into per-customer bill records.
+
+    Returns ``None`` when the text does not look like the report format so the
+    caller can fall back to the standard single-bill parser.
+    """
+    if not _looks_like_insurance_report(text):
+        return None
+
+    lines = [
+        cleaned
+        for raw_line in text.splitlines()
+        if (cleaned := _clean_report_line(raw_line))
+    ]
+    start_idx = next(
+        (idx for idx, line in enumerate(lines) if _SERIAL_LINE_RE.match(line)),
+        None,
+    )
+    if start_idx is None:
+        return [
+            BillParseResult(
+                bill_type="insurance",
+                file_name=file_name,
+                raw_text=text,
+                extraction_error="INSURANCE_REPORT_ROWS_NOT_FOUND",
+            )
+        ]
+
+    records: list[list[str]] = []
+    current_record: list[str] = []
+    for line in lines[start_idx:]:
+        if normalize_text(line).startswith("total"):
+            break
+        if _SERIAL_LINE_RE.match(line):
+            if current_record:
+                records.append(current_record)
+            current_record = [line]
+            continue
+        if current_record:
+            current_record.append(line)
+
+    if current_record:
+        records.append(current_record)
+
+    if not records:
+        return [
+            BillParseResult(
+                bill_type="insurance",
+                file_name=file_name,
+                raw_text=text,
+                extraction_error="INSURANCE_REPORT_ROWS_NOT_FOUND",
+            )
+        ]
+
+    results: list[BillParseResult] = []
+    for record_lines in records:
+        serial_number = record_lines[0].rstrip(".")
+        date_idx = next(
+            (
+                idx
+                for idx, line in enumerate(record_lines[1:], start=1)
+                if _DATE_LINE_RE.match(line)
+            ),
+            None,
+        )
+        customer_name = ""
+        customer_error: str | None = None
+        amount = None
+        amount_error: str | None = None
+
+        if date_idx is None:
+            customer_error = "INSURANCE_REPORT_DATE_NOT_FOUND"
+            amount_error = "INSURANCE_REPORT_GROSS_PREMIUM_NOT_FOUND"
+        else:
+            customer_name = _extract_report_customer_name(record_lines, date_idx)
+            if not customer_name or not _is_likely_customer_name(customer_name):
+                customer_error = "INSURANCE_REPORT_CUSTOMER_NOT_FOUND"
+                customer_name = ""
+
+            amount = _extract_report_gross_premium(record_lines, date_idx)
+            if amount is None:
+                amount_error = "INSURANCE_REPORT_GROSS_PREMIUM_NOT_FOUND"
+
+        results.append(
+            BillParseResult(
+                bill_type="insurance",
+                file_name=_build_report_row_file_name(file_name, serial_number),
+                raw_text="\n".join(record_lines),
+                customer_name=customer_name or None,
+                amount=amount,
+                customer_error=customer_error,
+                amount_error=amount_error,
+            )
+        )
+
+    return results
 
 
 def extract_final_amount(

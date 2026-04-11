@@ -15,6 +15,62 @@ from insurance_rto_updater.integrations.local_workbook import (
     FIXED_RTO_HEADER,
 )
 
+INSURANCE_REPORT_TEXT = """MIS BUSINESS REPORT USER WISE
+
+S.No.
+User Name
+Policy
+Type
+Policy Number
+Customer
+Name
+Start
+Date
+OD
+Premium
+NCB
+ND
+Cover
+RTI
+Cover
+RSA
+addons
+Gross
+Premium
+1.
+MAHENDRA61835
+N
+993792623750035786
+VIRENDRA
+VALIYA
+2/2/2026
+8:00:28
+PM
+851
+0
+YES
+NO
+NO
+5548
+2.
+MAHENDRA61835
+N
+993792623750039494 IMAM SHAH
+2/6/2026
+5:12:13
+PM
+802
+0
+YES
+NO
+NO
+5491
+Total
+1653
+0
+11039
+"""
+
 
 class ApiTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -112,6 +168,58 @@ class ApiTests(unittest.TestCase):
         worksheet = workbook[payload["sheetTitle"]]
         self.assertEqual(worksheet.cell(row=2, column=2).value, 5400.0)
         self.assertEqual(worksheet.cell(row=3, column=3).value, 3200.0)
+
+    @patch("insurance_rto_updater.orchestration.pipeline.extract_text_from_file")
+    def test_process_endpoint_updates_multiple_rows_from_insurance_report(
+        self,
+        mocked_extract,
+    ) -> None:
+        def fake_extract(path: Path) -> str:
+            if "insurance" in path.name:
+                return INSURANCE_REPORT_TEXT
+            return "Received From: Suresh Sharma\nGrand Total: 3200"
+
+        mocked_extract.side_effect = fake_extract
+
+        response = self.client.post(
+            "/api/process",
+            data={
+                "workbook": (
+                    io.BytesIO(
+                        self._workbook_bytes(
+                            customer_rows=[
+                                ["VIRENDRA VALIYA", "", ""],
+                                ["IMAM SHAH", "", ""],
+                                ["Suresh Sharma", "", ""],
+                            ]
+                        )
+                    ),
+                    "sales.xlsx",
+                ),
+                "insurance_files": (
+                    io.BytesIO(b"insurance-report"),
+                    "insurance-report.pdf",
+                ),
+                "rto_files": (
+                    io.BytesIO(b"rto"),
+                    "rto-one.pdf",
+                ),
+                "clear_existing": "1",
+            },
+            content_type="multipart/form-data",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        assert payload is not None
+
+        self.assertEqual(payload["summary"]["billsProcessed"], 3)
+        self.assertEqual(payload["summary"]["billsUpdated"], 3)
+        self.assertEqual(payload["summary"]["rowsUpdated"], 3)
+        self.assertEqual(payload["reviewRows"], [])
+        self.assertEqual(payload["rows"][0][1], 5548.0)
+        self.assertEqual(payload["rows"][1][1], 5491.0)
+        self.assertEqual(payload["rows"][2][2], 3200.0)
 
     @patch("insurance_rto_updater.orchestration.pipeline.extract_text_from_file")
     def test_process_endpoint_returns_review_rows_with_reason(

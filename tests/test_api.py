@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import pandas as pd
 import tempfile
 import unittest
 from pathlib import Path
@@ -156,7 +157,7 @@ class ApiTests(unittest.TestCase):
         self.assertTrue(payload["downloadUrl"].endswith("sales_updated.xlsx"))
         self.assertTrue(payload["reviewCsvUrl"].endswith("review_conflicts.csv"))
         self.assertEqual(payload["rows"][0][1], 5400.0)
-        self.assertEqual(payload["rows"][1][2], 3200.0)
+        self.assertEqual(payload["rows"][1][2], 3700.0)
 
         review_response = self.client.get(payload["reviewCsvUrl"])
         self.assertEqual(review_response.status_code, 200)
@@ -167,7 +168,7 @@ class ApiTests(unittest.TestCase):
         workbook = load_workbook(io.BytesIO(download_response.data))
         worksheet = workbook[payload["sheetTitle"]]
         self.assertEqual(worksheet.cell(row=2, column=2).value, 5400.0)
-        self.assertEqual(worksheet.cell(row=3, column=3).value, 3200.0)
+        self.assertEqual(worksheet.cell(row=3, column=3).value, 3700.0)
 
     @patch("insurance_rto_updater.orchestration.pipeline.extract_text_from_file")
     def test_process_endpoint_updates_multiple_rows_from_insurance_report(
@@ -219,7 +220,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(payload["reviewRows"], [])
         self.assertEqual(payload["rows"][0][1], 5548.0)
         self.assertEqual(payload["rows"][1][1], 5491.0)
-        self.assertEqual(payload["rows"][2][2], 3200.0)
+        self.assertEqual(payload["rows"][2][2], 3700.0)
 
     @patch("insurance_rto_updater.orchestration.pipeline.extract_text_from_file")
     def test_process_endpoint_returns_review_rows_with_reason(
@@ -284,6 +285,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(payload["summary"]["rowsUpdated"], 0)
         self.assertEqual(payload["summary"]["billsReview"], 1)
         self.assertEqual(payload["reviewRows"][0]["reason"], "EXISTING_TARGET_VALUE")
+        self.assertEqual(payload["reviewRows"][0]["extractedAmount"], "3700")
         self.assertEqual(payload["rows"][1][2], 1800)
 
         download_response = self.client.get(payload["downloadUrl"])
@@ -330,7 +332,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(payload["summary"]["billsUpdated"], 1)
         self.assertEqual(payload["summary"]["parseFailures"], 0)
         self.assertEqual(payload["reviewRows"], [])
-        self.assertEqual(payload["rows"][0][2], 5937.0)
+        self.assertEqual(payload["rows"][0][2], 6437.0)
 
     def test_process_endpoint_requires_receipts(self) -> None:
         response = self.client.post(
@@ -349,6 +351,53 @@ class ApiTests(unittest.TestCase):
             response.get_json()["error"],
             "Upload at least one insurance or RTO bill.",
         )
+
+    def test_generate_sales_register_endpoint_success(self) -> None:
+        raw_data = [
+            {
+                "Invoice Date": "2026-02-14",
+                "Invoice Number": "INV-001",
+                "Contact Name": "John Doe",
+                "Contact Mobile Number": "9999988888",
+                "Contact Address": "123 Main St",
+                "Model Name": "Model S",
+                "Color": "Red",
+                "VIN": "1234567890VIN",
+                "Total Invoice Amount": 1500000.0,
+                "Pre Vat Discount": 10000.0,
+                "Financer Name": "HDFC",
+                "Invoice Status": "Invoiced",
+            }
+        ]
+        df = pd.DataFrame(raw_data)
+        excel_io = io.BytesIO()
+        df.to_excel(excel_io, index=False)
+        excel_io.seek(0)
+
+        response = self.client.post(
+            "/api/generate-sales-register",
+            data={
+                "raw_file": (excel_io, "raw_invoices.xlsx"),
+            },
+            content_type="multipart/form-data",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertIsNotNone(payload)
+        self.assertEqual(payload["rowsWritten"], 1)
+        self.assertEqual(payload["monthYear"], "Feb2026")
+        self.assertIn("downloadUrl", payload)
+        self.assertIn("manualColumns", payload)
+
+    def test_generate_sales_register_endpoint_requires_file(self) -> None:
+        response = self.client.post(
+            "/api/generate-sales-register",
+            data={},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("error", response.get_json())
 
 
 if __name__ == "__main__":

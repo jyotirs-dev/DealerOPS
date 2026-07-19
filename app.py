@@ -23,6 +23,7 @@ from insurance_rto_updater.integrations.local_workbook import (
 )
 from insurance_rto_updater.models import ProcessingConfig, ProcessingResult
 from insurance_rto_updater.orchestration.pipeline import run_processing_pipeline
+from insurance_rto_updater.output.sales_register import generate_sales_register
 
 # ---------------------------------------------------------------------------
 # Application constants
@@ -282,6 +283,49 @@ def process_files():  # type: ignore[no-untyped-def]
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     except RuntimeError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": f"Unexpected server error: {exc}"}), 500
+
+
+@app.post("/api/generate-sales-register")
+def generate_sales_register_endpoint():  # type: ignore[no-untyped-def]
+    """Accept a raw OEM/DMS invoice export and produce a Vehicle Sales Register."""
+    try:
+        raw_upload = request.files.get("raw_file")
+        if not raw_upload or not raw_upload.filename:
+            raise ValueError("Upload a raw invoice Excel file (.xlsx).")
+
+        job_id = uuid.uuid4().hex
+        upload_dir = UPLOAD_ROOT / job_id
+        output_dir = OUTPUT_ROOT / job_id
+
+        raw_path = _save_uploaded_files(
+            [raw_upload],
+            target_dir=upload_dir / "raw",
+            allowed_extensions=WORKBOOK_EXTENSIONS,
+        )
+        if not raw_path:
+            raise ValueError("Upload a raw invoice Excel file (.xlsx).")
+
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        result = generate_sales_register(
+            raw_path=raw_path[0],
+            output_path=output_dir / f"DurgaDarshanSalesList{job_id[:8]}.xlsx",
+        )
+
+        output_name = result.output_path.name
+
+        return jsonify({
+            "jobId": job_id,
+            "rowsWritten": result.rows_written,
+            "monthYear": result.month_year,
+            "manualColumns": result.manual_columns,
+            "downloadUrl": f"/download/{job_id}/{output_name}",
+        })
+
+    except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     except Exception as exc:
         return jsonify({"error": f"Unexpected server error: {exc}"}), 500

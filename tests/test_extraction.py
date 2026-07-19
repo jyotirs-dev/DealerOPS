@@ -13,6 +13,7 @@ from insurance_rto_updater.extraction.text_parser import (
     extract_customer,
     extract_final_amount,
     extract_insurance_report_rows,
+    extract_pay_in_slip_rows,
 )
 
 INSURANCE_REPORT_TEXT = """MIS BUSINESS REPORT USER WISE
@@ -178,6 +179,70 @@ class InsuranceReportExtractionTests(unittest.TestCase):
 
     def test_returns_none_for_standard_insurance_bill_text(self):
         rows = extract_insurance_report_rows(
+            "Insured: Ramesh Kumar\nGrand Total: 5400",
+            "bill.pdf",
+        )
+        self.assertIsNone(rows)
+
+
+class PayInSlipExtractionTests(unittest.TestCase):
+    """Tests for parsing multi-row HIBIPL Pay-in-slip PDF reports."""
+
+    def test_extracts_pay_in_slip_rows(self):
+        mock_text = """Pay-In-Slip Details
+Insurance for Hero MotoCorp Vehicles
+Pay-in-Slip
+Policy Details
+S. No. Policy No.
+Policy
+Date
+Customer Name
+Policy Status
+Executive Name
+Premium
+1
+993792623750103274
+May 8
+2026
+Mr LAKSHMAN BAGRI Fresh
+MAHENDRA61835
+5524
+2
+993792623750103271
+May 8
+2026
+Mr VIKRAM .
+Fresh
+MAHENDRA61835
+5583
+3
+993792623750083708
+Apr 3 2026 Mr JORAVER SINGH
+BHATI
+Fresh
+MAHENDRA61835
+5682
+Total Amount     16789
+"""
+        rows = extract_pay_in_slip_rows(mock_text, "payinslip.pdf")
+        self.assertIsNotNone(rows)
+        assert rows is not None
+        self.assertEqual(len(rows), 3)
+
+        self.assertEqual(rows[0].file_name, "payinslip.pdf [S.No. 1]")
+        self.assertEqual(rows[0].customer_name, "LAKSHMAN BAGRI")
+        self.assertEqual(rows[0].amount, Decimal("5524"))
+
+        self.assertEqual(rows[1].file_name, "payinslip.pdf [S.No. 2]")
+        self.assertEqual(rows[1].customer_name, "VIKRAM")
+        self.assertEqual(rows[1].amount, Decimal("5583"))
+
+        self.assertEqual(rows[2].file_name, "payinslip.pdf [S.No. 3]")
+        self.assertEqual(rows[2].customer_name, "JORAVER SINGH BHATI")
+        self.assertEqual(rows[2].amount, Decimal("5682"))
+
+    def test_returns_none_for_standard_bill_text(self):
+        rows = extract_pay_in_slip_rows(
             "Insured: Ramesh Kumar\nGrand Total: 5400",
             "bill.pdf",
         )

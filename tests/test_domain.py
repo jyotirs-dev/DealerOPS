@@ -10,6 +10,7 @@ import unittest
 from decimal import Decimal
 
 from insurance_rto_updater.domain import matching as matching_module
+from insurance_rto_updater.domain.amounts import finalize_bill_amount
 from insurance_rto_updater.domain.normalization import (
     normalize_customer_name,
     normalize_text,
@@ -131,6 +132,22 @@ class MatchingTests(unittest.TestCase):
         self.assertIn("row=2", result)
         self.assertIn("score=95.50", result)
         self.assertIn("customer=ABC", result)
+
+
+class AmountAdjustmentTests(unittest.TestCase):
+    """Tests for final bill amount adjustments."""
+
+    def test_adds_agent_fee_to_rto_amount(self):
+        self.assertEqual(
+            finalize_bill_amount("rto", Decimal("3200")),
+            Decimal("3700"),
+        )
+
+    def test_leaves_insurance_amount_unchanged(self):
+        self.assertEqual(
+            finalize_bill_amount("insurance", Decimal("5400")),
+            Decimal("5400"),
+        )
 
 
 class AssignmentTests(unittest.TestCase):

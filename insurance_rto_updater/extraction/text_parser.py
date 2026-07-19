@@ -599,3 +599,160 @@ def extract_final_amount(
         return None, "MULTIPLE_FINAL_AMOUNTS_FOUND"
 
     return None, "FINAL_AMOUNT_LABEL_NOT_FOUND"
+
+
+def _looks_like_pay_in_slip(text: str) -> bool:
+    """Return ``True`` when the text matches the HIBIPL Pay-in-slip layout."""
+    normalized = normalize_text(text.replace("\xa0", " "))
+    return all(marker in normalized for marker in ("pay in slip", "policy details", "premium"))
+
+
+def extract_pay_in_slip_rows(
+    text: str,
+    file_name: str,
+) -> list[BillParseResult] | None:
+    """
+    Parse a multi-row HIBIPL Pay-in-slip PDF into per-customer bill records.
+
+    Returns ``None`` when the text does not look like the pay-in-slip format
+    so the caller can fall back to the standard single-bill parser.
+    """
+    if not _looks_like_pay_in_slip(text):
+        return None
+
+    lines = [
+        cleaned
+        for raw_line in text.splitlines()
+        if (cleaned := " ".join(raw_line.replace("\xa0", " ").split()).strip())
+    ]
+
+    # Find start of data (line '1' after 'policy details')
+    start_idx = None
+    policy_details_idx = None
+    for idx, line in enumerate(lines):
+        if "policy details" in line.lower():
+            policy_details_idx = idx
+            break
+
+    if policy_details_idx is not None:
+        for idx in range(policy_details_idx, len(lines)):
+            if lines[idx] == "1":
+                start_idx = idx
+                break
+
+    if start_idx is None:
+        return [
+            BillParseResult(
+                bill_type="insurance",
+                file_name=file_name,
+                raw_text=text,
+                extraction_error="PAY_IN_SLIP_ROWS_NOT_FOUND",
+            )
+        ]
+
+    # Find end of data (line containing 'total amount')
+    end_idx = len(lines)
+    for idx in range(start_idx, len(lines)):
+        if "total amount" in lines[idx].lower():
+            end_idx = idx
+            break
+
+    data_lines = lines[start_idx:end_idx]
+
+    # Group records by serial numbers
+    serial_indices: list[int] = []
+    next_serial = 1
+    for idx, line in enumerate(data_lines):
+        if line.strip() == str(next_serial):
+            serial_indices.append(idx)
+            next_serial += 1
+
+    records: list[list[str]] = []
+    for i in range(len(serial_indices)):
+        start = serial_indices[i]
+        end = serial_indices[i+1] if i + 1 < len(serial_indices) else len(data_lines)
+        records.append(data_lines[start+1:end])
+
+    if not records:
+        return [
+            BillParseResult(
+                bill_type="insurance",
+                file_name=file_name,
+                raw_text=text,
+                extraction_error="PAY_IN_SLIP_ROWS_NOT_FOUND",
+            )
+        ]
+
+    date_pattern = re.compile(
+        r'\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2}(?:\s+\d{4})?\b',
+        re.IGNORECASE
+    )
+    year_pattern = re.compile(r'\b20\d{2}\b')
+    status_pattern = re.compile(r'\b(?:Fresh|Renewal)\b', re.IGNORECASE)
+
+    results: list[BillParseResult] = []
+    for idx, record in enumerate(records, start=1):
+        if len(record) < 4:
+            results.append(
+                BillParseResult(
+                    bill_type="insurance",
+                    file_name=f"{file_name} [S.No. {idx}]",
+                    raw_text="\n".join(record),
+                    extraction_error="PAY_IN_SLIP_RECORD_MALFORMED",
+                )
+            )
+            continue
+
+        policy_no = record[0].strip()
+        premium_str = record[-1].strip()
+        intermediate = record[1:-2]
+
+        # Extract customer name
+        merged = " ".join(intermediate)
+        merged_no_date = date_pattern.sub("", merged)
+        merged_no_year = year_pattern.sub("", merged_no_date)
+        merged_no_status = status_pattern.sub("", merged_no_year)
+
+        cleaned_name = merged_no_status.replace(".", " ").replace(",", " ")
+        cleaned_name = " ".join(cleaned_name.split()).strip()
+
+        # Title clean (matches Mr, Mrs, Ms honorifics)
+        title_match = re.search(
+            r"\b(?:mr|mrs|ms|m)\.?\s+([a-zA-Z ]+)$",
+            cleaned_name,
+            flags=re.IGNORECASE,
+        )
+        if title_match:
+            customer_name = title_match.group(1).strip()
+        else:
+            customer_name = cleaned_name
+
+        try:
+            amount = Decimal(premium_str.replace(",", ""))
+        except (InvalidOperation, ValueError):
+            amount = None
+
+        customer_error = None
+        amount_error = None
+
+        if not customer_name or not _is_likely_customer_name(customer_name):
+            customer_error = "PAY_IN_SLIP_CUSTOMER_NOT_FOUND"
+            customer_name = None
+
+        if amount is None:
+            amount_error = "PAY_IN_SLIP_PREMIUM_NOT_FOUND"
+
+        results.append(
+            BillParseResult(
+                bill_type="insurance",
+                file_name=f"{file_name} [S.No. {idx}]",
+                raw_text="\n".join(record),
+                customer_name=customer_name,
+                amount=amount,
+                customer_error=customer_error,
+                amount_error=amount_error,
+            )
+        )
+
+    return results
+

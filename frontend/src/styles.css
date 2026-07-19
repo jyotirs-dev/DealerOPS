@@ -513,3 +513,107 @@ select {
     min-height: 520px;
   }
 }
+
+/* Mode Switcher */
+.mode-switcher-container {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 8px;
+}
+
+.mode-switcher-pill {
+  display: inline-flex;
+  background: rgba(95, 62, 27, 0.08);
+  padding: 6px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+}
+
+.mode-switcher-btn {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-weight: 700;
+  padding: 10px 20px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.mode-switcher-btn:hover {
+  color: var(--text);
+}
+
+.mode-switcher-btn.active {
+  background: #fffaf0;
+  color: var(--accent-deep);
+  box-shadow: 0 4px 12px rgba(82, 51, 22, 0.08);
+}
+
+/* Sales Register styling */
+.sr-results-card {
+  margin-top: 18px;
+  padding: 18px;
+  border-radius: 20px;
+  background: rgba(13, 122, 100, 0.06);
+  border: 1px solid rgba(13, 122, 100, 0.15);
+}
+
+.sr-results-card h3 {
+  margin: 0 0 10px;
+  color: var(--accent-deep);
+  font-size: 1.1rem;
+}
+
+.sr-results-list {
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sr-results-list li {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.95rem;
+  color: var(--text);
+  border-bottom: 1px dashed rgba(95, 62, 27, 0.1);
+  padding-bottom: 4px;
+}
+
+.sr-results-list li:last-child {
+  border-bottom: none;
+}
+
+.sr-results-list strong {
+  color: var(--accent-deep);
+}
+
+.manual-cols-container {
+  margin-top: 14px;
+}
+
+.manual-cols-title {
+  font-weight: 700;
+  font-size: 0.9rem;
+  margin-bottom: 8px;
+  color: var(--muted);
+}
+
+.manual-cols-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.manual-col-chip {
+  font-size: 0.8rem;
+  background: #fffdf8;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  padding: 4px 10px;
+  border-radius: 999px;
+}
+

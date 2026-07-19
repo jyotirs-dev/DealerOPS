@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from insurance_rto_updater.domain.amounts import finalize_bill_amount
 from insurance_rto_updater.domain.assignment import (
     Assignment,
     ReviewRow,
@@ -31,6 +32,7 @@ from insurance_rto_updater.extraction.text_parser import (
     extract_customer,
     extract_final_amount,
     extract_insurance_report_rows,
+    extract_pay_in_slip_rows,
 )
 from insurance_rto_updater.models import (
     BillParseResult,
@@ -74,6 +76,10 @@ def _parse_bill_entries(
         ]
 
     if bill_type == "insurance":
+        pay_in_slip_rows = extract_pay_in_slip_rows(raw_text, path.name)
+        if pay_in_slip_rows is not None:
+            return pay_in_slip_rows
+
         report_rows = extract_insurance_report_rows(raw_text, path.name)
         if report_rows is not None:
             return report_rows
@@ -84,6 +90,7 @@ def _parse_bill_entries(
     amount, amount_error = extract_final_amount(
         raw_text, config.amount_labels, config.amount_position
     )
+    amount = finalize_bill_amount(bill_type, amount)
 
     return [
         BillParseResult(

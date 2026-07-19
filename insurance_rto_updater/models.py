@@ -171,6 +171,29 @@ class ProcessingResult:
     sheet_title: str
 
 
+@dataclass
+class SalesRegisterResult:
+    """
+    Summary returned after generating a Vehicle Sales Register workbook.
+
+    Attributes
+    ----------
+    output_path:
+        Filesystem path to the generated .xlsx file.
+    rows_written:
+        Number of invoiced data rows written into the register.
+    month_year:
+        Month and year detected from the first invoice date (e.g. "Feb2026").
+    manual_columns:
+        Human-readable list of columns the user still needs to fill in.
+    """
+
+    output_path: Path
+    rows_written: int
+    month_year: str
+    manual_columns: list[str]
+
+
 # ---------------------------------------------------------------------------
 # Google Sheets data transfer objects
 # ---------------------------------------------------------------------------

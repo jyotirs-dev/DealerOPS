@@ -29,7 +29,7 @@ flowchart LR
 
 ### Step 0: User Submits the Form
 
-Everything starts in [app.py](file:///Users/jyotirsolanki/Development/automatiom/app.py).
+Everything starts in [app.py](file:///Users/jyotirsolanki/Showroom/Automation & Scripts/DealerOPS/app.py).
 
 The user opens `http://127.0.0.1:5000` and sees a form where they provide:
 
@@ -41,11 +41,11 @@ The user opens `http://127.0.0.1:5000` and sees a form where they provide:
 | RTO Column Header | `"RTO Amount"` | Where to write RTO amounts |
 | Customer Labels | `"Insured, Received From"` | Text that appears *before* the customer name on a bill |
 | Amount Labels | `"Grand Total, Final Amount"` | Text that appears *near* the payable amount on a bill |
-| Amount Position | [same_line](file:///Users/jyotirsolanki/Development/automatiom/tests/test_extraction.py#54-59) or [next_line](file:///Users/jyotirsolanki/Development/automatiom/tests/test_extraction.py#60-65) | Is the amount on the same line as the label, or the next line? |
+| Amount Position | [same_line](file:///Users/jyotirsolanki/Showroom/Automation & Scripts/DealerOPS/tests/test_extraction.py#54-59) or [next_line](file:///Users/jyotirsolanki/Showroom/Automation & Scripts/DealerOPS/tests/test_extraction.py#60-65) | Is the amount on the same line as the label, or the next line? |
 | Name Threshold | `95` | How similar must names be to match (0–100) |
 | Bill Files | Multiple PDFs/images | The actual bills to process |
 
-When the user clicks **"Process Files"**, the [process_files()](file:///Users/jyotirsolanki/Development/automatiom/app.py#185-267) route handler kicks off:
+When the user clicks **"Process Files"**, the [process_files()](file:///Users/jyotirsolanki/Showroom/Automation & Scripts/DealerOPS/app.py#185-267) route handler kicks off:
 
 ```python
 # app.py — simplified flow
@@ -63,9 +63,9 @@ sheets_adapter.apply_write_plan(...)                     # write results back to
 
 ### Step 1: Load the Google Sheet
 
-**Module:** [integrations/google_sheets.py](file:///Users/jyotirsolanki/Development/automatiom/insurance_rto_updater/integrations/google_sheets.py)
+**Module:** [integrations/google_sheets.py](file:///Users/jyotirsolanki/Showroom/Automation & Scripts/DealerOPS/insurance_rto_updater/integrations/google_sheets.py)
 
-The [GoogleSheetsAdapter](file:///Users/jyotirsolanki/Development/automatiom/insurance_rto_updater/integrations/google_sheets.py#88-299) connects via a **service account** (a Google Cloud JSON key file) using the `gspread` library.
+The [GoogleSheetsAdapter](file:///Users/jyotirsolanki/Showroom/Automation & Scripts/DealerOPS/insurance_rto_updater/integrations/google_sheets.py#88-299) connects via a **service account** (a Google Cloud JSON key file) using the `gspread` library.
 
 ```python
 # What the sheet data looks like after loading:
@@ -89,7 +89,7 @@ SheetData(
 
 ### Step 2: Enter the Pipeline
 
-**Module:** [orchestration/pipeline.py](file:///Users/jyotirsolanki/Development/automatiom/insurance_rto_updater/orchestration/pipeline.py)
+**Module:** [orchestration/pipeline.py](file:///Users/jyotirsolanki/Showroom/Automation & Scripts/DealerOPS/insurance_rto_updater/orchestration/pipeline.py)
 
 This is the conductor that calls every other module in sequence. Here's the entire pipeline, annotated:
 
@@ -122,7 +122,7 @@ def run_processing_pipeline(...):
 
 ### Step 3: Extract Text from a Bill
 
-**Modules:** [extraction/file_router.py](file:///Users/jyotirsolanki/Development/automatiom/insurance_rto_updater/extraction/file_router.py) → [extraction/pdf.py](file:///Users/jyotirsolanki/Development/automatiom/insurance_rto_updater/extraction/pdf.py) or [extraction/ocr.py](file:///Users/jyotirsolanki/Development/automatiom/insurance_rto_updater/extraction/ocr.py)
+**Modules:** [extraction/file_router.py](file:///Users/jyotirsolanki/Showroom/Automation & Scripts/DealerOPS/insurance_rto_updater/extraction/file_router.py) → [extraction/pdf.py](file:///Users/jyotirsolanki/Showroom/Automation & Scripts/DealerOPS/insurance_rto_updater/extraction/pdf.py) or [extraction/ocr.py](file:///Users/jyotirsolanki/Showroom/Automation & Scripts/DealerOPS/insurance_rto_updater/extraction/ocr.py)
 
 The file router checks the extension and picks the right extracto:
 
@@ -156,7 +156,7 @@ Received with Thanks Rs 14,750.00
 
 ### Step 4: Parse Customer Name + Amount
 
-**Module:** [extraction/text_parser.py](file:///Users/jyotirsolanki/Development/automatiom/insurance_rto_updater/extraction/text_parser.py)
+**Module:** [extraction/text_parser.py](file:///Users/jyotirsolanki/Showroom/Automation & Scripts/DealerOPS/insurance_rto_updater/extraction/text_parser.py)
 
 This is where the interesting business logic lives. Two things are extracted:
 
@@ -176,7 +176,7 @@ Label: "Insured"
 
 **Why fuzzy label matching?** OCR often garbles text — `"Insured"` might be read as `"lnsured"` or `"Insured:"`. The parser tolerates this by requiring only 75% of label tokens to match at ≥ 80% character similarity.
 
-**Why blocked keywords?** Insurance documents are full of misleading text. The line `"Insured: Optional Cover Passenger"` looks like a customer name but isn't. The parser maintains a [blocklist](file:///Users/jyotirsolanki/Development/automatiom/insurance_rto_updater/extraction/text_parser.py#L137-L152) of insurance-specific words.
+**Why blocked keywords?** Insurance documents are full of misleading text. The line `"Insured: Optional Cover Passenger"` looks like a customer name but isn't. The parser maintains a [blocklist](file:///Users/jyotirsolanki/Showroom/Automation & Scripts/DealerOPS/insurance_rto_updater/extraction/text_parser.py#L137-L152) of insurance-specific words.
 
 #### 4b: Amount Extraction
 
@@ -199,7 +199,7 @@ The amount regex handles Indian number formats: `1,00,000` (lakhs) and `12,500.5
 
 ### Step 5: Match Bill to a Sheet Row
 
-**Module:** [domain/matching.py](file:///Users/jyotirsolanki/Development/automatiom/insurance_rto_updater/domain/matching.py)
+**Module:** [domain/matching.py](file:///Users/jyotirsolanki/Showroom/Automation & Scripts/DealerOPS/insurance_rto_updater/domain/matching.py)
 
 Now we have: `customer_name = "ANSHU SINGH SISODIYA"` and `amount = 14750.00`.
 
@@ -213,7 +213,7 @@ Sheet row 3:    "RAMESH KUMAR"          → score: 32.1  ❌
 Sheet row 4:    "SURESH SHARMA"         → score: 28.5  ❌
 ```
 
-**Scoring strategy** (in [score_all_candidates](file:///Users/jyotirsolanki/Development/automatiom/insurance_rto_updater/domain/matching.py#L40-L82)):
+**Scoring strategy** (in [score_all_candidates](file:///Users/jyotirsolanki/Showroom/Automation & Scripts/DealerOPS/insurance_rto_updater/domain/matching.py#L40-L82)):
 1. **Primary:** `rapidfuzz.WRatio` + `rapidfuzz.token_set_ratio` (handles word order differences)
 2. **Bonus:** If ≥ 80% of query tokens appear in the candidate, use the overlap ratio
 3. **Fallback:** If `rapidfuzz` isn't installed, use stdlib `SequenceMatcher`
@@ -222,7 +222,7 @@ Sheet row 4:    "SURESH SHARMA"         → score: 28.5  ❌
 
 ### Step 6: Assign or Send to Review
 
-**Module:** [domain/assignment.py](file:///Users/jyotirsolanki/Development/automatiom/insurance_rto_updater/domain/assignment.py)
+**Module:** [domain/assignment.py](file:///Users/jyotirsolanki/Showroom/Automation & Scripts/DealerOPS/insurance_rto_updater/domain/assignment.py)
 
 The assignment logic makes one of four decisions:
 
@@ -241,14 +241,14 @@ flowchart TD
 
 This prevents obviously-correct matches from going to manual review just because OCR garbled a character.
 
-After all bills are assigned, [detect_row_conflicts](file:///Users/jyotirsolanki/Development/automatiom/insurance_rto_updater/domain/assignment.py#L96-L130) checks for a fifth failure mode:
+After all bills are assigned, [detect_row_conflicts](file:///Users/jyotirsolanki/Showroom/Automation & Scripts/DealerOPS/insurance_rto_updater/domain/assignment.py#L96-L130) checks for a fifth failure mode:
 > Two different insurance bills both matched to the same sheet row → `MULTIPLE_BILLS_FOR_ROW_TYPE`
 
 ---
 
 ### Step 7: Build the Write Plan
 
-**Module:** [validation/comparator.py](file:///Users/jyotirsolanki/Development/automatiom/insurance_rto_updater/validation/comparator.py)
+**Module:** [validation/comparator.py](file:///Users/jyotirsolanki/Showroom/Automation & Scripts/DealerOPS/insurance_rto_updater/validation/comparator.py)
 
 The accepted assignments are converted into cell-update instructions:
 
@@ -268,9 +268,9 @@ If `clear_existing=True`, the plan also includes instructions to blank columns B
 
 Back in the pipeline, two things happen:
 
-1. **[google_sheets.py](file:///Users/jyotirsolanki/Development/automatiom/insurance_rto_updater/integrations/google_sheets.py)** applies the write plan via `gspread`'s [batch_clear](file:///Users/jyotirsolanki/Development/automatiom/tests/test_sheets_adapter.py#37-39) + [batch_update](file:///Users/jyotirsolanki/Development/automatiom/tests/test_sheets_adapter.py#40-44) API (efficient batch operations).
+1. **[google_sheets.py](file:///Users/jyotirsolanki/Showroom/Automation & Scripts/DealerOPS/insurance_rto_updater/integrations/google_sheets.py)** applies the write plan via `gspread`'s [batch_clear](file:///Users/jyotirsolanki/Showroom/Automation & Scripts/DealerOPS/tests/test_sheets_adapter.py#37-39) + [batch_update](file:///Users/jyotirsolanki/Showroom/Automation & Scripts/DealerOPS/tests/test_sheets_adapter.py#40-44) API (efficient batch operations).
 
-2. **[csv_writer.py](file:///Users/jyotirsolanki/Development/automatiom/insurance_rto_updater/output/csv_writer.py)** writes a `review_conflicts.csv` containing all bills that couldn't be auto-matched:
+2. **[csv_writer.py](file:///Users/jyotirsolanki/Showroom/Automation & Scripts/DealerOPS/insurance_rto_updater/output/csv_writer.py)** writes a `review_conflicts.csv` containing all bills that couldn't be auto-matched:
 
 | bill_type | bill_file | extracted_customer | extracted_amount | reason |
 |---|---|---|---|---|
@@ -282,7 +282,7 @@ Back in the pipeline, two things happen:
 
 ### Step 9: Show Results
 
-Back in [app.py](file:///Users/jyotirsolanki/Development/automatiom/app.py), the results are rendered in the [result.html](file:///Users/jyotirsolanki/Development/automatiom/templates/result.html) template showing:
+Back in [app.py](file:///Users/jyotirsolanki/Showroom/Automation & Scripts/DealerOPS/app.py), the results are rendered in the [result.html](file:///Users/jyotirsolanki/Showroom/Automation & Scripts/DealerOPS/templates/result.html) template showing:
 - Total bills processed / updated / sent to review
 - A preview of the review CSV
 - A download link for the full CSV
@@ -332,15 +332,15 @@ graph TD
 
 | File | Lines | Role | Pure? |
 |---|---|---|---|
-| [models.py](file:///Users/jyotirsolanki/Development/automatiom/insurance_rto_updater/models.py) | ~170 | Data classes, single source of truth | ✅ |
-| [ocr.py](file:///Users/jyotirsolanki/Development/automatiom/insurance_rto_updater/extraction/ocr.py) | ~110 | Tesseract OCR engine | ❌ (subprocess) |
-| [pdf.py](file:///Users/jyotirsolanki/Development/automatiom/insurance_rto_updater/extraction/pdf.py) | ~100 | PDF text extraction | ❌ (file I/O) |
-| [text_parser.py](file:///Users/jyotirsolanki/Development/automatiom/insurance_rto_updater/extraction/text_parser.py) | ~290 | Customer + amount parsing | ✅ |
-| [normalization.py](file:///Users/jyotirsolanki/Development/automatiom/insurance_rto_updater/domain/normalization.py) | ~35 | Text normalize utility | ✅ |
-| [matching.py](file:///Users/jyotirsolanki/Development/automatiom/insurance_rto_updater/domain/matching.py) | ~95 | Fuzzy name scoring | ✅ |
-| [assignment.py](file:///Users/jyotirsolanki/Development/automatiom/insurance_rto_updater/domain/assignment.py) | ~150 | Bill → row assignment | ✅ |
-| [comparator.py](file:///Users/jyotirsolanki/Development/automatiom/insurance_rto_updater/validation/comparator.py) | ~120 | Header mapping, write plans | ✅ |
-| [google_sheets.py](file:///Users/jyotirsolanki/Development/automatiom/insurance_rto_updater/integrations/google_sheets.py) | ~230 | Google Sheets read/write | ❌ (network) |
-| [pipeline.py](file:///Users/jyotirsolanki/Development/automatiom/insurance_rto_updater/orchestration/pipeline.py) | ~170 | Orchestration conductor | ✅ (delegates I/O) |
-| [csv_writer.py](file:///Users/jyotirsolanki/Development/automatiom/insurance_rto_updater/output/csv_writer.py) | ~55 | Review CSV serialization | ❌ (file I/O) |
-| [app.py](file:///Users/jyotirsolanki/Development/automatiom/app.py) | ~210 | Flask HTTP layer | ❌ (HTTP) |
+| [models.py](file:///Users/jyotirsolanki/Showroom/Automation & Scripts/DealerOPS/insurance_rto_updater/models.py) | ~170 | Data classes, single source of truth | ✅ |
+| [ocr.py](file:///Users/jyotirsolanki/Showroom/Automation & Scripts/DealerOPS/insurance_rto_updater/extraction/ocr.py) | ~110 | Tesseract OCR engine | ❌ (subprocess) |
+| [pdf.py](file:///Users/jyotirsolanki/Showroom/Automation & Scripts/DealerOPS/insurance_rto_updater/extraction/pdf.py) | ~100 | PDF text extraction | ❌ (file I/O) |
+| [text_parser.py](file:///Users/jyotirsolanki/Showroom/Automation & Scripts/DealerOPS/insurance_rto_updater/extraction/text_parser.py) | ~290 | Customer + amount parsing | ✅ |
+| [normalization.py](file:///Users/jyotirsolanki/Showroom/Automation & Scripts/DealerOPS/insurance_rto_updater/domain/normalization.py) | ~35 | Text normalize utility | ✅ |
+| [matching.py](file:///Users/jyotirsolanki/Showroom/Automation & Scripts/DealerOPS/insurance_rto_updater/domain/matching.py) | ~95 | Fuzzy name scoring | ✅ |
+| [assignment.py](file:///Users/jyotirsolanki/Showroom/Automation & Scripts/DealerOPS/insurance_rto_updater/domain/assignment.py) | ~150 | Bill → row assignment | ✅ |
+| [comparator.py](file:///Users/jyotirsolanki/Showroom/Automation & Scripts/DealerOPS/insurance_rto_updater/validation/comparator.py) | ~120 | Header mapping, write plans | ✅ |
+| [google_sheets.py](file:///Users/jyotirsolanki/Showroom/Automation & Scripts/DealerOPS/insurance_rto_updater/integrations/google_sheets.py) | ~230 | Google Sheets read/write | ❌ (network) |
+| [pipeline.py](file:///Users/jyotirsolanki/Showroom/Automation & Scripts/DealerOPS/insurance_rto_updater/orchestration/pipeline.py) | ~170 | Orchestration conductor | ✅ (delegates I/O) |
+| [csv_writer.py](file:///Users/jyotirsolanki/Showroom/Automation & Scripts/DealerOPS/insurance_rto_updater/output/csv_writer.py) | ~55 | Review CSV serialization | ❌ (file I/O) |
+| [app.py](file:///Users/jyotirsolanki/Showroom/Automation & Scripts/DealerOPS/app.py) | ~210 | Flask HTTP layer | ❌ (HTTP) |

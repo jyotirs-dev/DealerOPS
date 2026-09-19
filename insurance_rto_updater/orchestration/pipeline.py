@@ -181,6 +181,15 @@ def run_processing_pipeline(
         + [("rto", p) for p in rto_paths]
     )
 
+    clear_bill_types = {
+        bill_type
+        for bill_type, paths in (
+            ("insurance", insurance_paths),
+            ("rto", rto_paths),
+        )
+        if paths
+    }
+
     # Steps 3–4: extract, parse, and assign each bill.
     review_rows: list[ReviewRow] = []
     assignments: list[Assignment] = []
@@ -249,6 +258,7 @@ def run_processing_pipeline(
         rto_col=rto_col,
         max_row=max_row,
         clear_existing=config.clear_existing,
+        clear_bill_types=clear_bill_types,
     )
 
     # Step 7: write the review CSV.

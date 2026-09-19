@@ -161,6 +161,7 @@ def build_sheet_write_plan(
     rto_col: int,
     max_row: int,
     clear_existing: bool,
+    clear_bill_types: set[str] | None = None,
 ) -> SheetWritePlan:
     """
     Build a batch of cell updates (and optional column clears) from
@@ -170,9 +171,10 @@ def build_sheet_write_plan(
       - Insurance bills write to ``insurance_col``.
       - RTO bills write to ``rto_col``.
 
-    If ``clear_existing`` is ``True``, both insurance and RTO columns
-    are blanked from row 2 to ``max_row`` *before* writing — this
-    ensures that stale values from previous runs are removed.
+    If ``clear_existing`` is ``True``, only the columns targeted by the
+    current bill upload are blanked from row 2 to ``max_row`` *before*
+    writing.  This prevents an RTO-only run from clearing insurance values
+    and vice versa.
     """
     value_updates = [
         CellValueUpdate(
@@ -183,7 +185,13 @@ def build_sheet_write_plan(
         for a in accepted_assignments
     ]
 
-    clear_columns = [insurance_col, rto_col] if clear_existing else []
+    clear_columns: list[int] = []
+    if clear_existing:
+        scoped_bill_types = clear_bill_types or {"insurance", "rto"}
+        if "insurance" in scoped_bill_types:
+            clear_columns.append(insurance_col)
+        if "rto" in scoped_bill_types:
+            clear_columns.append(rto_col)
     clear_from_row = 2
     clear_to_row = max(max_row, 2)
 

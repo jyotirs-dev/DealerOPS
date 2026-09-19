@@ -91,6 +91,7 @@ class ApiTests(unittest.TestCase):
 
     def _workbook_bytes(
         self,
+        existing_insurance: int | str = "",
         existing_rto: int | str = "",
         customer_rows: list[list[str | int]] | None = None,
     ) -> bytes:
@@ -105,7 +106,7 @@ class ApiTests(unittest.TestCase):
             ]
         )
         rows = customer_rows or [
-            ["Ramesh Kumar", "", ""],
+            ["Ramesh Kumar", existing_insurance, ""],
             ["Suresh Sharma", "", existing_rto],
         ]
         for row in rows:
@@ -293,6 +294,92 @@ class ApiTests(unittest.TestCase):
 
         workbook = load_workbook(io.BytesIO(download_response.data))
         worksheet = workbook[payload["sheetTitle"]]
+        self.assertEqual(worksheet.cell(row=3, column=3).value, 1800)
+
+    @patch("insurance_rto_updater.orchestration.pipeline.extract_text_from_file")
+    def test_process_endpoint_clears_only_rto_column_when_requested(
+        self,
+        mocked_extract,
+    ) -> None:
+        mocked_extract.return_value = "Received From: Suresh Sharma\nGrand Total: 3200"
+
+        response = self.client.post(
+            "/api/process",
+            data={
+                "workbook": (
+                    io.BytesIO(
+                        self._workbook_bytes(
+                            existing_insurance=5400,
+                            existing_rto=1800,
+                        )
+                    ),
+                    "sales.xlsx",
+                ),
+                "rto_files": (
+                    io.BytesIO(b"rto"),
+                    "rto-one.pdf",
+                ),
+                "clear_existing": "1",
+            },
+            content_type="multipart/form-data",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        assert payload is not None
+
+        self.assertEqual(payload["rows"][0][1], 5400)
+        self.assertEqual(payload["rows"][1][2], 3700.0)
+
+        download_response = self.client.get(payload["downloadUrl"])
+        self.assertEqual(download_response.status_code, 200)
+
+        workbook = load_workbook(io.BytesIO(download_response.data))
+        worksheet = workbook[payload["sheetTitle"]]
+        self.assertEqual(worksheet.cell(row=2, column=2).value, 5400)
+        self.assertEqual(worksheet.cell(row=3, column=3).value, 3700.0)
+
+    @patch("insurance_rto_updater.orchestration.pipeline.extract_text_from_file")
+    def test_process_endpoint_clears_only_insurance_column_when_requested(
+        self,
+        mocked_extract,
+    ) -> None:
+        mocked_extract.return_value = "Insured: Ramesh Kumar\nGrand Total: 5400"
+
+        response = self.client.post(
+            "/api/process",
+            data={
+                "workbook": (
+                    io.BytesIO(
+                        self._workbook_bytes(
+                            existing_insurance=1000,
+                            existing_rto=1800,
+                        )
+                    ),
+                    "sales.xlsx",
+                ),
+                "insurance_files": (
+                    io.BytesIO(b"insurance"),
+                    "insurance-one.pdf",
+                ),
+                "clear_existing": "1",
+            },
+            content_type="multipart/form-data",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        assert payload is not None
+
+        self.assertEqual(payload["rows"][0][1], 5400.0)
+        self.assertEqual(payload["rows"][1][2], 1800)
+
+        download_response = self.client.get(payload["downloadUrl"])
+        self.assertEqual(download_response.status_code, 200)
+
+        workbook = load_workbook(io.BytesIO(download_response.data))
+        worksheet = workbook[payload["sheetTitle"]]
+        self.assertEqual(worksheet.cell(row=2, column=2).value, 5400.0)
         self.assertEqual(worksheet.cell(row=3, column=3).value, 1800)
 
     @patch("insurance_rto_updater.orchestration.pipeline.extract_text_from_file")

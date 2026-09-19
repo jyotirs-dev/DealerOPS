@@ -153,6 +153,57 @@ select {
   border-color: transparent;
 }
 
+.stage-tab-strip {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.stage-tab-button {
+  min-height: 76px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.stage-tab-label {
+  display: block;
+  text-align: left;
+}
+
+.stage-status-pill {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 6px 10px;
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  background: rgba(95, 62, 27, 0.1);
+  color: var(--muted);
+}
+
+.stage-status-pill.ready {
+  background: rgba(13, 122, 100, 0.12);
+  color: var(--accent-deep);
+}
+
+.stage-status-pill.completed {
+  background: rgba(13, 122, 100, 0.18);
+  color: var(--accent-deep);
+}
+
+.stage-status-pill.warning {
+  background: rgba(161, 45, 31, 0.12);
+  color: var(--alert);
+}
+
+.stage-status-pill.info {
+  background: rgba(24, 126, 196, 0.14);
+  color: #155d90;
+}
+
 .tab-card {
   padding: 22px;
   border-radius: 24px;
@@ -278,10 +329,25 @@ select {
   box-shadow: 0 16px 24px rgba(13, 122, 100, 0.22);
 }
 
+.secondary-button {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 11px 14px;
+  background: #fffdf8;
+  color: var(--text);
+  font-weight: 700;
+  cursor: pointer;
+}
+
 .primary-button:disabled {
   cursor: not-allowed;
   opacity: 0.52;
   box-shadow: none;
+}
+
+.secondary-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
 }
 
 .process-note {
@@ -464,6 +530,109 @@ select {
   color: var(--muted);
 }
 
+.workflow-support-card {
+  margin-top: 18px;
+  padding: 18px;
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(95, 62, 27, 0.08);
+}
+
+.workflow-support-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+
+.workflow-support-row strong {
+  text-align: right;
+}
+
+.workflow-support-label {
+  color: var(--muted);
+  font-size: 0.88rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.artifact-timeline {
+  margin-top: 18px;
+}
+
+.artifact-timeline-header h3 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.artifact-card-list,
+.artifact-selector-list {
+  margin-top: 16px;
+  display: grid;
+  gap: 12px;
+}
+
+.artifact-card {
+  padding: 16px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.74);
+  border: 1px solid rgba(95, 62, 27, 0.08);
+}
+
+.artifact-card-topline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.artifact-file-name,
+.artifact-source-line,
+.artifact-review-note {
+  margin: 10px 0 0;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.artifact-download-links {
+  margin-top: 12px;
+}
+
+.artifact-selector {
+  border: 1px solid rgba(95, 62, 27, 0.08);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.72);
+  padding: 16px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.artifact-selector.active {
+  border-color: rgba(13, 122, 100, 0.35);
+  background: rgba(13, 122, 100, 0.08);
+}
+
+.artifact-selector-label {
+  display: block;
+  font-weight: 800;
+  color: var(--text);
+}
+
+.artifact-selector-meta {
+  display: block;
+  margin-top: 8px;
+  color: var(--muted);
+}
+
+.workflow-empty-state {
+  margin-top: 18px;
+}
+
+.review-manual-columns {
+  margin-top: 18px;
+}
+
 @media (max-width: 1120px) {
   .app-nav {
     grid-template-columns: 1fr;
@@ -482,7 +651,8 @@ select {
     border-radius: 22px;
   }
 
-  .tab-strip {
+  .tab-strip,
+  .stage-tab-strip {
     grid-template-columns: 1fr;
   }
 
@@ -506,6 +676,15 @@ select {
 
   .preview-toggle {
     flex: 1;
+  }
+
+  .workflow-support-row {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .workflow-support-row strong {
+    text-align: left;
   }
 
   .grid-theme {
@@ -616,4 +795,3 @@ select {
   padding: 4px 10px;
   border-radius: 999px;
 }
-

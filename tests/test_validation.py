@@ -91,6 +91,28 @@ class BuildSheetWritePlanTests(unittest.TestCase):
         # Clear columns should be set.
         self.assertEqual(plan.clear_columns, [2, 3])
 
+    def test_clears_only_targeted_insurance_column(self):
+        plan = build_sheet_write_plan(
+            accepted_assignments=[],
+            insurance_col=2,
+            rto_col=3,
+            max_row=4,
+            clear_existing=True,
+            clear_bill_types={"insurance"},
+        )
+        self.assertEqual(plan.clear_columns, [2])
+
+    def test_clears_only_targeted_rto_column(self):
+        plan = build_sheet_write_plan(
+            accepted_assignments=[],
+            insurance_col=2,
+            rto_col=3,
+            max_row=4,
+            clear_existing=True,
+            clear_bill_types={"rto"},
+        )
+        self.assertEqual(plan.clear_columns, [3])
+
     def test_no_clear_when_disabled(self):
         plan = build_sheet_write_plan(
             accepted_assignments=[],

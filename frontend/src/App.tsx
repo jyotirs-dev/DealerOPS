@@ -1,64 +1,27 @@
-import { useState } from "react";
-import type { ChangeEvent } from "react";
+import { useEffect, useState } from "react";
 
-import { AgGridReact } from "ag-grid-react";
-import type { ColDef } from "ag-grid-community";
-
-import { FIXED_HEADERS, readWorkbookPreview, type WorkbookPreview } from "./lib/workbook";
-
-type AppMode = "updater" | "sales-register";
-type ActiveTab = "sales" | "rto" | "insurance";
-
-type Settings = {
-  customerLabels: string;
-  amountLabels: string;
-  amountPosition: "same_line" | "next_line";
-  nameThreshold: string;
-  clearExisting: boolean;
-};
-
-type ProcessSummary = {
-  billsProcessed: number;
-  billsUpdated: number;
-  rowsUpdated: number;
-  billsReview: number;
-  parseFailures: number;
-  noMatch: number;
-  multiMatch: number;
-  rowConflicts: number;
-};
-
-type ReviewRow = {
-  billType: string;
-  billFile: string;
-  extractedCustomer: string;
-  extractedAmount: string;
-  bestScore: string;
-  candidateSalesRows: string;
-  reason: string;
-};
-
-type ProcessResponse = {
-  jobId: string;
-  sheetTitle: string;
-  headerRow: string[];
-  rows: Array<Array<string | number | boolean | null>>;
-  summary: ProcessSummary;
-  reviewRows: ReviewRow[];
-  downloadUrl: string;
-  reviewCsvUrl: string;
-};
-
-type SalesRegisterResponse = {
-  jobId: string;
-  rowsWritten: number;
-  monthYear: string;
-  manualColumns: string[];
-  downloadUrl: string;
-};
-
-type GridRow = Record<string, string | number | boolean | null>;
-type PreviewMode = "worksheet" | "review";
+import { FIXED_HEADERS, readWorkbookPreview } from "./lib/workbook";
+import { ReviewWorkspace } from "./components/ReviewWorkspace";
+import { StageTabs } from "./components/StageTabs";
+import {
+  ConvertStagePanel,
+  UpdateStagePanel,
+} from "./components/StagePanels";
+import { WorkflowSummaryPanel } from "./components/WorkflowSummaryPanel";
+import type {
+  CurrentWorkbook,
+  PreviewMode,
+  ProcessResponse,
+  SalesRegisterResponse,
+  Settings,
+  StageTone,
+  UpdateStageId,
+  WorkflowArtifact,
+  WorkflowStageId,
+  WorkflowTabId,
+  WorkbookOverrideState,
+} from "./workflowTypes";
+import type { WorkbookPreview } from "./lib/workbook";
 
 const DEFAULT_SETTINGS: Settings = {
   customerLabels: "Insured, Insured Name, Received From",
@@ -69,186 +32,181 @@ const DEFAULT_SETTINGS: Settings = {
   clearExisting: false,
 };
 
-const TAB_COPY: Record<ActiveTab, { title: string; hint: string }> = {
-  sales: {
-    title: "Sales Sheet",
-    hint: "Upload the Excel workbook, validate the fixed headers, and preview the target worksheet before processing.",
-  },
-  rto: {
-    title: "RTO Receipts",
-    hint: "Drop in one or more RTO bills. PDFs and image formats are supported.",
-  },
-  insurance: {
-    title: "Insurance Files",
-    hint: "Upload insurance PDFs or scans. The parser uses the advanced settings below when matching values.",
-  },
+const STAGE_TITLES: Record<WorkflowTabId, string> = {
+  convert: "Stage 1: Convert",
+  rto: "Stage 2: Update RTO",
+  insurance: "Stage 3: Update Insurance",
+  review: "Review & Download",
 };
 
-const REVIEW_REASON_COPY: Record<string, string> = {
-  NO_MATCH: "No matching sales row cleared the configured threshold.",
-  MULTIPLE_SALES_ROWS: "Multiple sales rows matched the extracted customer.",
-  MULTIPLE_BILLS_FOR_ROW_TYPE:
-    "Multiple bills claimed the same sales row for this bill type.",
-  EXISTING_TARGET_VALUE:
-    "An existing Insurance / RTO value was preserved because Clear existing was off.",
+const STAGE_LABELS: Record<WorkflowStageId, string> = {
+  convert: "Stage 1",
+  rto: "Stage 2",
+  insurance: "Stage 3",
 };
 
-function buildGridModel(preview: WorkbookPreview | null): {
-  columnDefs: ColDef<GridRow>[];
-  rowData: GridRow[];
-} {
-  if (!preview) {
-    return {
-      columnDefs: [],
-      rowData: [],
-    };
+const STAGE_NEXT_TAB: Record<WorkflowStageId, WorkflowTabId> = {
+  convert: "rto",
+  rto: "insurance",
+  insurance: "review",
+};
+
+function emptyOverrideState(): WorkbookOverrideState {
+  return {
+    file: null,
+    preview: null,
+    error: null,
+    fileName: null,
+  };
+}
+
+function previewFromProcessResponse(
+  result: ProcessResponse,
+  fileName: string,
+): WorkbookPreview {
+  return {
+    fileName,
+    sheetTitle: result.sheetTitle,
+    headerRow: result.headerRow,
+    rows: result.rows,
+  };
+}
+
+function extractDownloadFileName(url: string, fallbackName: string): string {
+  const cleaned = url.split("?")[0] ?? "";
+  const parts = cleaned.split("/").filter(Boolean);
+  const fileName = parts[parts.length - 1];
+  return fileName || fallbackName;
+}
+
+async function hydrateDownloadedWorkbook(
+  downloadUrl: string,
+  fallbackName: string,
+  previewFallback: WorkbookPreview | null = null,
+): Promise<{
+  file: File;
+  preview: WorkbookPreview | null;
+  fileName: string;
+}> {
+  const workbookResponse = await fetch(downloadUrl);
+  if (!workbookResponse.ok) {
+    throw new Error("Failed to load generated workbook.");
   }
 
-  const columnDefs: ColDef<GridRow>[] = [
-    {
-      headerName: "#",
-      field: "__rowNumber",
-      width: 90,
-      pinned: "left",
-      sortable: false,
-      filter: false,
-      suppressMovable: true,
-      cellClass: "row-number-cell",
-    },
-    ...preview.headerRow.map((header, index) => ({
-      field: `col_${index}`,
-      headerName: header || `Column ${index + 1}`,
-      sortable: true,
-      filter: true,
-      resizable: true,
-      flex: 1,
-      minWidth: 180,
-      tooltipField: `col_${index}`,
-    })),
-  ];
-
-  const rowData = preview.rows.map((row, rowIndex) => {
-    const record: GridRow = {
-      __rowNumber: rowIndex + 2,
-    };
-    preview.headerRow.forEach((_, index) => {
-      record[`col_${index}`] = row[index] ?? "";
-    });
-    return record;
+  const workbookBlob = await workbookResponse.blob();
+  const fileName = extractDownloadFileName(downloadUrl, fallbackName);
+  const file = new File([workbookBlob], fileName, {
+    type:
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   });
 
-  return { columnDefs, rowData };
-}
-
-function fileListToArray(fileList: FileList | null): File[] {
-  return fileList ? Array.from(fileList) : [];
-}
-
-function renderFileList(files: File[]) {
-  if (files.length === 0) {
-    return <p className="empty-state">No files uploaded yet.</p>;
+  try {
+    const preview = await readWorkbookPreview(file);
+    return { file, preview, fileName };
+  } catch {
+    return { file, preview: previewFallback, fileName };
   }
+}
 
+function nextCompletedOrder(artifacts: WorkflowArtifact[]): number {
   return (
-    <ul className="file-list">
-      {files.map((file) => (
-        <li key={`${file.name}-${file.size}`}>{file.name}</li>
-      ))}
-    </ul>
+    artifacts.reduce(
+      (currentMax, artifact) => Math.max(currentMax, artifact.completedOrder),
+      0,
+    ) + 1
   );
 }
 
-function formatReviewReasonSegment(reason: string): string {
-  const trimmedReason = reason.trim();
-  if (!trimmedReason) {
-    return "";
-  }
-
-  if (trimmedReason in REVIEW_REASON_COPY) {
-    return REVIEW_REASON_COPY[trimmedReason];
-  }
-
-  if (trimmedReason.startsWith("TEXT_EXTRACTION_ERROR:")) {
-    return trimmedReason.replace("TEXT_EXTRACTION_ERROR:", "Text extraction failed:");
-  }
-
-  return trimmedReason;
+function mergeArtifacts(
+  artifacts: WorkflowArtifact[],
+  artifact: WorkflowArtifact,
+  invalidatedStages: WorkflowStageId[] = [],
+): WorkflowArtifact[] {
+  return [
+    ...artifacts.filter(
+      (entry) =>
+        entry.stage !== artifact.stage && !invalidatedStages.includes(entry.stage),
+    ),
+    artifact,
+  ].sort((left, right) => left.completedOrder - right.completedOrder);
 }
 
-function formatReviewReason(reason: string): string {
-  return reason
-    .split(";")
-    .map((part) => formatReviewReasonSegment(part))
-    .filter(Boolean)
-    .join("; ");
-}
+type StageStatus = {
+  text: string;
+  tone: StageTone;
+};
 
 export default function App() {
-  const [appMode, setAppMode] = useState<AppMode>("updater");
-  const [activeTab, setActiveTab] = useState<ActiveTab>("sales");
+  const [activeTab, setActiveTab] = useState<WorkflowTabId>("convert");
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
+  const [artifacts, setArtifacts] = useState<WorkflowArtifact[]>([]);
+  const [currentWorkbook, setCurrentWorkbook] = useState<CurrentWorkbook | null>(null);
+  const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(null);
   const [previewMode, setPreviewMode] = useState<PreviewMode>("worksheet");
-  const [workbookFile, setWorkbookFile] = useState<File | null>(null);
-  const [workbookPreview, setWorkbookPreview] = useState<WorkbookPreview | null>(
-    null,
-  );
-  const [workbookError, setWorkbookError] = useState<string | null>(null);
+
+  const [rawInvoiceFile, setRawInvoiceFile] = useState<File | null>(null);
+  const [convertError, setConvertError] = useState<string | null>(null);
+  const [isGeneratingWorkbook, setIsGeneratingWorkbook] = useState(false);
+
   const [rtoFiles, setRtoFiles] = useState<File[]>([]);
+  const [rtoOverride, setRtoOverride] = useState<WorkbookOverrideState>(
+    emptyOverrideState(),
+  );
+  const [rtoError, setRtoError] = useState<string | null>(null);
+  const [isProcessingRto, setIsProcessingRto] = useState(false);
+
   const [insuranceFiles, setInsuranceFiles] = useState<File[]>([]);
-  const [processError, setProcessError] = useState<string | null>(null);
-  const [processResult, setProcessResult] = useState<ProcessResponse | null>(null);
-  const [isProcessing, setIsProcessing] = useState(false);
+  const [insuranceOverride, setInsuranceOverride] = useState<WorkbookOverrideState>(
+    emptyOverrideState(),
+  );
+  const [insuranceError, setInsuranceError] = useState<string | null>(null);
+  const [isProcessingInsurance, setIsProcessingInsurance] = useState(false);
 
-  // Sales Register state
-  const [srRawFile, setSrRawFile] = useState<File | null>(null);
-  const [srResult, setSrResult] = useState<SalesRegisterResponse | null>(null);
-  const [srError, setSrError] = useState<string | null>(null);
-  const [srProcessing, setSrProcessing] = useState(false);
-  const [srPreview, setSrPreview] = useState<WorkbookPreview | null>(null);
+  const convertArtifact = artifacts.find((artifact) => artifact.stage === "convert") ?? null;
+  const rtoArtifact = artifacts.find((artifact) => artifact.stage === "rto") ?? null;
+  const insuranceArtifact = artifacts.find((artifact) => artifact.stage === "insurance") ?? null;
 
-  const { columnDefs, rowData } = buildGridModel(workbookPreview);
-  const reviewRows = processResult?.reviewRows ?? [];
-  const hasReviewRows = reviewRows.length > 0;
-  const canProcess =
-    workbookFile !== null &&
-    (rtoFiles.length > 0 || insuranceFiles.length > 0) &&
-    !isProcessing;
+  const rtoBaseWorkbook = rtoOverride.file ?? currentWorkbook?.file ?? null;
+  const insuranceBaseWorkbook = insuranceOverride.file ?? currentWorkbook?.file ?? null;
 
-  const readinessMessage = isProcessing
-    ? "Processing workbook..."
-    : workbookFile === null
-      ? "Upload the sales workbook to continue."
-      : rtoFiles.length === 0 && insuranceFiles.length === 0
-        ? "Upload at least one RTO receipt or insurance file."
-        : workbookError
-          ? "Workbook preview is unavailable, but you can still process the uploaded file."
-          : "Ready to process the uploaded workbook.";
-  const tabs: ActiveTab[] = ["sales", "rto", "insurance"];
+  const rtoEffectiveWorkbookName = rtoOverride.fileName ?? currentWorkbook?.fileName ?? null;
+  const insuranceEffectiveWorkbookName =
+    insuranceOverride.fileName ?? currentWorkbook?.fileName ?? null;
 
-  async function handleWorkbookUpload(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0] ?? null;
-    setWorkbookFile(file);
-    setProcessResult(null);
-    setProcessError(null);
-    setPreviewMode("worksheet");
+  const rtoEffectiveWorkbookSource = rtoOverride.file
+    ? "Using workbook override"
+    : currentWorkbook
+      ? `Using latest workbook from ${STAGE_LABELS[currentWorkbook.sourceStage]}`
+      : null;
 
-    if (!file) {
-      setWorkbookPreview(null);
-      setWorkbookError(null);
+  const insuranceEffectiveWorkbookSource = insuranceOverride.file
+    ? "Using workbook override"
+    : currentWorkbook
+      ? `Using latest workbook from ${STAGE_LABELS[currentWorkbook.sourceStage]}`
+      : null;
+
+  useEffect(() => {
+    if (artifacts.length === 0) {
+      setSelectedArtifactId(null);
+      setPreviewMode("worksheet");
       return;
     }
 
-    try {
-      const preview = await readWorkbookPreview(file);
-      setWorkbookPreview(preview);
-      setWorkbookError(null);
-    } catch (error) {
-      setWorkbookPreview(null);
-      setWorkbookError(
-        error instanceof Error ? error.message : "Failed to read workbook.",
-      );
+    if (
+      selectedArtifactId
+      && artifacts.some((artifact) => artifact.id === selectedArtifactId)
+    ) {
+      return;
     }
-  }
+
+    const latestArtifact = [...artifacts].sort(
+      (left, right) => right.completedOrder - left.completedOrder,
+    )[0];
+    setSelectedArtifactId(latestArtifact?.id ?? null);
+    setPreviewMode(
+      latestArtifact?.reviewRows?.length ? "review" : "worksheet",
+    );
+  }, [artifacts, selectedArtifactId]);
 
   function handleSettingsChange(
     key: keyof Settings,
@@ -260,23 +218,145 @@ export default function App() {
     }));
   }
 
-  async function handleProcess() {
-    if (!canProcess || !workbookFile) {
+  async function validateWorkbookOverride(
+    file: File | null,
+    setter: (nextState: WorkbookOverrideState) => void,
+  ) {
+    if (!file) {
+      setter(emptyOverrideState());
+      return;
+    }
+
+    try {
+      const preview = await readWorkbookPreview(file);
+      setter({
+        file,
+        preview,
+        error: null,
+        fileName: file.name,
+      });
+    } catch (error) {
+      setter({
+        file: null,
+        preview: null,
+        error:
+          error instanceof Error ? error.message : "Failed to read workbook.",
+        fileName: file.name,
+      });
+    }
+  }
+
+  function clearRtoStageState() {
+    setRtoFiles([]);
+    setRtoOverride(emptyOverrideState());
+    setRtoError(null);
+  }
+
+  function clearInsuranceStageState() {
+    setInsuranceFiles([]);
+    setInsuranceOverride(emptyOverrideState());
+    setInsuranceError(null);
+  }
+
+  async function handleGenerateSalesRegister() {
+    if (!rawInvoiceFile || isGeneratingWorkbook) {
       return;
     }
 
     const formData = new FormData();
-    formData.append("workbook", workbookFile);
-    insuranceFiles.forEach((file) => formData.append("insurance_files[]", file));
-    rtoFiles.forEach((file) => formData.append("rto_files[]", file));
+    formData.append("raw_file", rawInvoiceFile);
+
+    setIsGeneratingWorkbook(true);
+    setConvertError(null);
+
+    try {
+      const response = await fetch("/api/generate-sales-register", {
+        method: "POST",
+        body: formData,
+      });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) {
+        throw new Error(payload?.error ?? "Generation failed.");
+      }
+
+      const result = payload as SalesRegisterResponse;
+      const fallbackFileName = `SalesRegister_${result.monthYear || "generated"}.xlsx`;
+      const workbook = await hydrateDownloadedWorkbook(
+        result.downloadUrl,
+        fallbackFileName,
+      );
+
+      const completedOrder = nextCompletedOrder(artifacts);
+      const artifact: WorkflowArtifact = {
+        id: `convert-${completedOrder}`,
+        stage: "convert",
+        displayLabel: "Generated workbook",
+        workbookDownloadUrl: result.downloadUrl,
+        workbookFile: workbook.file,
+        workbookPreview: workbook.preview,
+        workbookFileName: workbook.fileName,
+        sourceWorkbookFileName: rawInvoiceFile.name,
+        reviewRows: [],
+        monthYear: result.monthYear,
+        rowsWritten: result.rowsWritten,
+        manualColumns: result.manualColumns,
+        completedOrder,
+      };
+
+      const nextArtifacts = mergeArtifacts(artifacts, artifact, [
+        "rto",
+        "insurance",
+      ]);
+
+      setArtifacts(nextArtifacts);
+      setCurrentWorkbook({
+        file: workbook.file,
+        preview: workbook.preview,
+        downloadUrl: result.downloadUrl,
+        fileName: workbook.fileName,
+        sourceStage: "convert",
+      });
+      setSelectedArtifactId(artifact.id);
+      setPreviewMode("worksheet");
+      setActiveTab(STAGE_NEXT_TAB.convert);
+      clearRtoStageState();
+      clearInsuranceStageState();
+    } catch (error) {
+      setConvertError(
+        error instanceof Error ? error.message : "Generation failed.",
+      );
+    } finally {
+      setIsGeneratingWorkbook(false);
+    }
+  }
+
+  async function handleProcessStage(stageId: UpdateStageId) {
+    const isRto = stageId === "rto";
+    const baseWorkbook = isRto ? rtoBaseWorkbook : insuranceBaseWorkbook;
+    const receiptFiles = isRto ? rtoFiles : insuranceFiles;
+    const overrideError = isRto ? rtoOverride.error : insuranceOverride.error;
+    const setError = isRto ? setRtoError : setInsuranceError;
+    const setProcessing = isRto ? setIsProcessingRto : setIsProcessingInsurance;
+
+    if (!baseWorkbook || receiptFiles.length === 0 || overrideError) {
+      return;
+    }
+
+    const formData = new FormData();
+    formData.append("workbook", baseWorkbook);
+    if (isRto) {
+      receiptFiles.forEach((file) => formData.append("rto_files[]", file));
+    } else {
+      receiptFiles.forEach((file) => formData.append("insurance_files[]", file));
+    }
     formData.append("customer_labels", settings.customerLabels);
     formData.append("amount_labels", settings.amountLabels);
     formData.append("amount_position", settings.amountPosition);
     formData.append("name_threshold", settings.nameThreshold);
     formData.append("clear_existing", settings.clearExisting ? "1" : "0");
 
-    setIsProcessing(true);
-    setProcessError(null);
+    setProcessing(true);
+    setError(null);
 
     try {
       const response = await fetch("/api/process", {
@@ -292,611 +372,295 @@ export default function App() {
         ...((payload ?? {}) as Omit<ProcessResponse, "reviewRows">),
         reviewRows: Array.isArray(payload?.reviewRows) ? payload.reviewRows : [],
       } as ProcessResponse;
-      setProcessResult(result);
-      setPreviewMode(result.reviewRows.length > 0 ? "review" : "worksheet");
-      try {
-        const workbookResponse = await fetch(result.downloadUrl);
-        if (!workbookResponse.ok) {
-          throw new Error("Failed to reload updated workbook preview.");
-        }
-        const workbookBlob = await workbookResponse.blob();
-        const refreshedPreview = await readWorkbookPreview(
-          new File([workbookBlob], workbookFile.name, {
-            type:
-              workbookFile.type ||
-              "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-          }),
-        );
-        setWorkbookPreview(refreshedPreview);
-      } catch {
-        setWorkbookPreview({
-          fileName: workbookFile.name,
-          sheetTitle: result.sheetTitle,
-          headerRow: result.headerRow,
-          rows: result.rows,
-        });
-      }
-      setActiveTab("sales");
-    } catch (error) {
-      setProcessError(
-        error instanceof Error ? error.message : "Processing failed.",
+      const fallbackFileName = extractDownloadFileName(
+        result.downloadUrl,
+        `${stageId}_updated.xlsx`,
       );
-    } finally {
-      setIsProcessing(false);
-    }
-  }
+      const workbook = await hydrateDownloadedWorkbook(
+        result.downloadUrl,
+        fallbackFileName,
+        previewFromProcessResponse(result, fallbackFileName),
+      );
 
-  async function handleGenerateSalesRegister() {
-    if (!srRawFile || srProcessing) {
-      return;
-    }
+      const completedOrder = nextCompletedOrder(artifacts);
+      const artifact: WorkflowArtifact = {
+        id: `${stageId}-${completedOrder}`,
+        stage: stageId,
+        displayLabel:
+          stageId === "rto" ? "RTO updated workbook" : "Insurance updated workbook",
+        workbookDownloadUrl: result.downloadUrl,
+        workbookFile: workbook.file,
+        workbookPreview: workbook.preview,
+        workbookFileName: workbook.fileName,
+        sourceWorkbookFileName: baseWorkbook.name,
+        reviewCsvUrl: result.reviewCsvUrl,
+        summary: result.summary,
+        reviewRows: result.reviewRows,
+        completedOrder,
+      };
 
-    const formData = new FormData();
-    formData.append("raw_file", srRawFile);
+      const invalidatedStages: WorkflowStageId[] =
+        stageId === "rto" ? ["insurance"] : [];
+      const nextArtifacts = mergeArtifacts(artifacts, artifact, invalidatedStages);
 
-    setSrProcessing(true);
-    setSrError(null);
-
-    try {
-      const response = await fetch("/api/generate-sales-register", {
-        method: "POST",
-        body: formData,
+      setArtifacts(nextArtifacts);
+      setCurrentWorkbook({
+        file: workbook.file,
+        preview: workbook.preview,
+        downloadUrl: result.downloadUrl,
+        fileName: workbook.fileName,
+        sourceStage: stageId,
       });
-      const payload = await response.json().catch(() => null);
-      if (!response.ok) {
-        throw new Error(payload?.error ?? "Generation failed.");
-      }
+      setSelectedArtifactId(artifact.id);
+      setPreviewMode(result.reviewRows.length > 0 ? "review" : "worksheet");
+      setActiveTab(STAGE_NEXT_TAB[stageId]);
 
-      const result = payload as SalesRegisterResponse;
-      setSrResult(result);
-
-      // Fetch the generated workbook for AG Grid preview.
-      try {
-        const dlResponse = await fetch(result.downloadUrl);
-        if (!dlResponse.ok) {
-          throw new Error("Could not load generated workbook for preview.");
-        }
-        const blob = await dlResponse.blob();
-        const preview = await readWorkbookPreview(
-          new File([blob], `SalesRegister_${result.monthYear}.xlsx`, {
-            type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-          }),
-        );
-        setSrPreview(preview);
-      } catch {
-        setSrPreview(null);
+      if (isRto) {
+        clearRtoStageState();
+        clearInsuranceStageState();
+      } else {
+        clearInsuranceStageState();
       }
     } catch (error) {
-      setSrError(
-        error instanceof Error ? error.message : "Generation failed.",
-      );
+      setError(error instanceof Error ? error.message : "Processing failed.");
     } finally {
-      setSrProcessing(false);
+      setProcessing(false);
     }
   }
 
-  const { columnDefs: srColumnDefs, rowData: srRowData } = buildGridModel(srPreview);
+  function buildConvertStatus(): StageStatus {
+    if (isGeneratingWorkbook) {
+      return { text: "Working", tone: "info" };
+    }
+    if (convertArtifact) {
+      return { text: "Completed", tone: "completed" };
+    }
+    if (rawInvoiceFile) {
+      return { text: "Ready", tone: "ready" };
+    }
+    return { text: "Not started", tone: "neutral" };
+  }
+
+  function buildUpdateStatus(stageId: UpdateStageId): StageStatus {
+    const artifact = stageId === "rto" ? rtoArtifact : insuranceArtifact;
+    const isProcessing = stageId === "rto" ? isProcessingRto : isProcessingInsurance;
+    const overrideState = stageId === "rto" ? rtoOverride : insuranceOverride;
+    const baseWorkbook = stageId === "rto" ? rtoBaseWorkbook : insuranceBaseWorkbook;
+
+    if (isProcessing) {
+      return { text: "Working", tone: "info" };
+    }
+    if (artifact) {
+      return { text: "Completed", tone: "completed" };
+    }
+    if (overrideState.error || !baseWorkbook) {
+      return { text: "Needs workbook", tone: "warning" };
+    }
+    return { text: "Ready", tone: "ready" };
+  }
+
+  function buildReviewStatus(): StageStatus {
+    if (artifacts.length === 0) {
+      return { text: "Awaiting output", tone: "neutral" };
+    }
+    return {
+      text: `${artifacts.length} artifact${artifacts.length === 1 ? "" : "s"}`,
+      tone: "completed",
+    };
+  }
+
+  const convertStatus = buildConvertStatus();
+  const rtoStatus = buildUpdateStatus("rto");
+  const insuranceStatus = buildUpdateStatus("insurance");
+  const reviewStatus = buildReviewStatus();
+
+  const rtoCanRun =
+    Boolean(rtoBaseWorkbook)
+    && rtoFiles.length > 0
+    && !rtoOverride.error
+    && !isProcessingRto;
+  const insuranceCanRun =
+    Boolean(insuranceBaseWorkbook)
+    && insuranceFiles.length > 0
+    && !insuranceOverride.error
+    && !isProcessingInsurance;
+
+  const rtoReadinessMessage = isProcessingRto
+    ? "Processing workbook..."
+    : rtoOverride.error
+      ? "Clear or replace the invalid workbook override before running this stage."
+      : !rtoBaseWorkbook
+        ? "Generate stage 1 output first, or upload a workbook override to resume directly at RTO."
+        : rtoFiles.length === 0
+          ? "Upload at least one RTO receipt to continue."
+          : "Ready to update the RTO column in the current workbook.";
+
+  const insuranceReadinessMessage = isProcessingInsurance
+    ? "Processing workbook..."
+    : insuranceOverride.error
+      ? "Clear or replace the invalid workbook override before running this stage."
+      : !insuranceBaseWorkbook
+        ? "Generate stage 1 output first, or upload a workbook override to resume directly at insurance."
+        : insuranceFiles.length === 0
+          ? "Upload at least one insurance file to continue."
+          : "Ready to update the insurance column in the current workbook.";
+
+  const tabs = [
+    {
+      id: "convert" as const,
+      label: STAGE_TITLES.convert,
+      status: convertStatus.text,
+      tone: convertStatus.tone,
+    },
+    {
+      id: "rto" as const,
+      label: STAGE_TITLES.rto,
+      status: rtoStatus.text,
+      tone: rtoStatus.tone,
+    },
+    {
+      id: "insurance" as const,
+      label: STAGE_TITLES.insurance,
+      status: insuranceStatus.text,
+      tone: insuranceStatus.tone,
+    },
+    {
+      id: "review" as const,
+      label: STAGE_TITLES.review,
+      status: reviewStatus.text,
+      tone: reviewStatus.tone,
+    },
+  ];
 
   return (
     <main className="app-shell">
       <div className="workspace-frame">
-        {/* App Mode Switcher */}
-        <div className="mode-switcher-container">
-          <div className="mode-switcher-pill">
-            <button
-              type="button"
-              className={`mode-switcher-btn ${appMode === "updater" ? "active" : ""}`}
-              onClick={() => setAppMode("updater")}
-            >
-              Workbook Updater
-            </button>
-            <button
-              type="button"
-              className={`mode-switcher-btn ${appMode === "sales-register" ? "active" : ""}`}
-              onClick={() => setAppMode("sales-register")}
-            >
-              Sales Register
-            </button>
+        <header className="app-nav">
+          <div className="compact-header">
+            <p className="eyebrow">Guided workbook workflow</p>
+            <h1>Invoice conversion and staged bill updates</h1>
+            <p className="compact-copy">
+              Generate the styled sales workbook first, then update RTO and
+              insurance in separate guided stages. Every successful stage stays
+              reviewable and downloadable in one artifact workspace.
+            </p>
+            <div className="status-chip-row">
+              <span className="status-chip">{FIXED_HEADERS.customer}</span>
+              <span className="status-chip">{FIXED_HEADERS.insurance}</span>
+              <span className="status-chip">{FIXED_HEADERS.rto}</span>
+            </div>
           </div>
-        </div>
 
-        {appMode === "updater" ? (
-          <>
-            <header className="app-nav">
-              <div className="compact-header">
-                <p className="eyebrow">Excel-first reconciliation</p>
-                <h1>Workbook updater</h1>
-                <p className="compact-copy">
-                  Upload the sales workbook, add receipt files, and download the
-                  updated Excel output.
-                </p>
-                <div className="status-chip-row">
-                  <span className="status-chip">{FIXED_HEADERS.customer}</span>
-                  <span className="status-chip">{FIXED_HEADERS.insurance}</span>
-                  <span className="status-chip">{FIXED_HEADERS.rto}</span>
-                </div>
-              </div>
+          <StageTabs
+            tabs={tabs}
+            activeTab={activeTab}
+            onSelect={setActiveTab}
+          />
+        </header>
 
-              <div className="tab-strip" role="tablist" aria-label="Upload tabs">
-                {tabs.map((tab) => (
-                  <button
-                    key={tab}
-                    type="button"
-                    role="tab"
-                    aria-selected={activeTab === tab}
-                    className={activeTab === tab ? "tab-button active" : "tab-button"}
-                    onClick={() => setActiveTab(tab)}
-                  >
-                    {TAB_COPY[tab].title}
-                  </button>
-                ))}
-              </div>
-            </header>
-
-            <section className="workspace-grid">
-              <div className="control-panel">
-                <div className="tab-card">
-                  <h2>{TAB_COPY[activeTab].title}</h2>
-                  <p className="tab-hint">{TAB_COPY[activeTab].hint}</p>
-
-                  {activeTab === "sales" && (
-                    <div className="upload-stack">
-                      <label className="field-label" htmlFor="workbook-upload">
-                        Upload Excel workbook
-                      </label>
-                      <input
-                        id="workbook-upload"
-                        name="workbook-upload"
-                        type="file"
-                        accept=".xlsx,.xlsm"
-                        onChange={handleWorkbookUpload}
-                      />
-                      <div className="status-chip-row">
-                        <span className="status-chip">
-                          Workbook: {workbookFile ? workbookFile.name : "Not loaded"}
-                        </span>
-                        <span className="status-chip">
-                          Sheet: {workbookPreview ? workbookPreview.sheetTitle : "Pending"}
-                        </span>
-                        <span className="status-chip">
-                          Rows: {workbookPreview ? workbookPreview.rows.length : 0}
-                        </span>
-                      </div>
-                      {workbookError ? (
-                        <p className="error-banner" role="alert">
-                          {workbookError}
-                        </p>
-                      ) : null}
-                    </div>
-                  )}
-
-                  {activeTab === "rto" && (
-                    <div className="upload-stack">
-                      <label className="field-label" htmlFor="rto-upload">
-                        Upload RTO receipts
-                      </label>
-                      <input
-                        id="rto-upload"
-                        name="rto-upload"
-                        type="file"
-                        accept=".pdf,.png,.jpg,.jpeg,.tif,.tiff,.bmp,.webp"
-                        multiple
-                        onChange={(event) =>
-                          setRtoFiles(fileListToArray(event.target.files))
-                        }
-                      />
-                      <span className="status-chip">{rtoFiles.length} files selected</span>
-                      {renderFileList(rtoFiles)}
-                    </div>
-                  )}
-
-                  {activeTab === "insurance" && (
-                    <div className="upload-stack">
-                      <label className="field-label" htmlFor="insurance-upload">
-                        Upload insurance files
-                      </label>
-                      <input
-                        id="insurance-upload"
-                        name="insurance-upload"
-                        type="file"
-                        accept=".pdf,.png,.jpg,.jpeg,.tif,.tiff,.bmp,.webp"
-                        multiple
-                        onChange={(event) =>
-                          setInsuranceFiles(fileListToArray(event.target.files))
-                        }
-                      />
-                      <span className="status-chip">
-                        {insuranceFiles.length} files selected
-                      </span>
-                      {renderFileList(insuranceFiles)}
-                    </div>
-                  )}
-                </div>
-
-                <details className="advanced-panel">
-                  <summary>Advanced parser settings</summary>
-                  <div className="advanced-grid">
-                    <label>
-                      Customer labels
-                      <input
-                        type="text"
-                        value={settings.customerLabels}
-                        onChange={(event) =>
-                          handleSettingsChange("customerLabels", event.target.value)
-                        }
-                      />
-                    </label>
-                    <label>
-                      Amount labels
-                      <input
-                        type="text"
-                        value={settings.amountLabels}
-                        onChange={(event) =>
-                          handleSettingsChange("amountLabels", event.target.value)
-                        }
-                      />
-                    </label>
-                    <label>
-                      Amount position
-                      <select
-                        value={settings.amountPosition}
-                        onChange={(event) =>
-                          handleSettingsChange(
-                            "amountPosition",
-                            event.target.value as Settings["amountPosition"],
-                          )
-                        }
-                      >
-                        <option value="same_line">On same line as label</option>
-                        <option value="next_line">On next line after label</option>
-                      </select>
-                    </label>
-                    <label>
-                      Name threshold
-                      <input
-                        type="number"
-                        min="0"
-                        max="100"
-                        step="0.1"
-                        value={settings.nameThreshold}
-                        onChange={(event) =>
-                          handleSettingsChange("nameThreshold", event.target.value)
-                        }
-                      />
-                    </label>
-                    <label className="checkbox-field">
-                      <input
-                        type="checkbox"
-                        checked={settings.clearExisting}
-                        onChange={(event) =>
-                          handleSettingsChange("clearExisting", event.target.checked)
-                        }
-                      />
-                      Clear existing Insurance / RTO values before writing matches
-                    </label>
-                  </div>
-                </details>
-
-                <div className="action-row">
-                  <button
-                    type="button"
-                    className="primary-button"
-                    onClick={handleProcess}
-                    disabled={!canProcess}
-                  >
-                    {isProcessing ? "Processing workbook..." : "Process workbook"}
-                  </button>
-                  <p className="process-note">{readinessMessage}</p>
-                  <p className="process-note">
-                    Downloaded workbook is the v1 output. Google Sheets export is
-                    intentionally deferred.
-                  </p>
-                </div>
-
-                {processError ? (
-                  <p className="error-banner" role="alert">
-                    {processError}
-                  </p>
-                ) : null}
-              </div>
-
-              <div className="preview-panel">
-                <div className="preview-header">
-                  <div>
-                    <p className="eyebrow">
-                      {previewMode === "review" && hasReviewRows
-                        ? "Review verification"
-                        : "Worksheet preview"}
-                    </p>
-                    <h2>
-                      {previewMode === "review" && hasReviewRows
-                        ? `${reviewRows.length} rows were not verified`
-                        : workbookPreview
-                          ? workbookPreview.sheetTitle
-                          : "Awaiting workbook"}
-                    </h2>
-                  </div>
-
-                  <div className="preview-toolbar">
-                    {hasReviewRows ? (
-                      <div className="preview-switcher" role="tablist" aria-label="Preview views">
-                        <button
-                          type="button"
-                          role="tab"
-                          aria-selected={previewMode === "worksheet"}
-                          className={
-                            previewMode === "worksheet"
-                              ? "preview-toggle active"
-                              : "preview-toggle"
-                          }
-                          onClick={() => setPreviewMode("worksheet")}
-                        >
-                          Worksheet
-                        </button>
-                        <button
-                          type="button"
-                          role="tab"
-                          aria-selected={previewMode === "review"}
-                          className={
-                            previewMode === "review"
-                              ? "preview-toggle active"
-                              : "preview-toggle"
-                          }
-                          onClick={() => setPreviewMode("review")}
-                        >
-                          Review rows
-                        </button>
-                      </div>
-                    ) : null}
-
-                    {processResult ? (
-                      <div className="result-links">
-                        <a href={processResult.downloadUrl}>Download updated workbook</a>
-                        <a href={processResult.reviewCsvUrl}>Download review CSV</a>
-                      </div>
-                    ) : null}
-                  </div>
-                </div>
-
-                {processResult ? (
-                  <div className="summary-grid">
-                    <article>
-                      <span>Total bills</span>
-                      <strong>{processResult.summary.billsProcessed}</strong>
-                    </article>
-                    <article>
-                      <span>Values updated</span>
-                      <strong>{processResult.summary.billsUpdated}</strong>
-                    </article>
-                    <article>
-                      <span>Rows updated</span>
-                      <strong>{processResult.summary.rowsUpdated}</strong>
-                    </article>
-                    <article>
-                      <span>Review rows</span>
-                      <strong>{processResult.summary.billsReview}</strong>
-                    </article>
-                  </div>
-                ) : null}
-
-                <div className="preview-meta">
-                  <span>
-                    {workbookPreview
-                      ? `${workbookPreview.headerRow.length} columns`
-                      : "0 columns"}
-                  </span>
-                  <span>
-                    {workbookPreview
-                      ? `${workbookPreview.rows.length} data rows`
-                      : "0 data rows"}
-                  </span>
-                  <span>{rtoFiles.length + insuranceFiles.length} receipt files loaded</span>
-                  {processResult ? <span>{reviewRows.length} review rows flagged</span> : null}
-                </div>
-
-                <div
-                  className="grid-shell"
-                  aria-label={previewMode === "review" ? "review rows" : "sheet preview"}
-                >
-                  {previewMode === "review" && hasReviewRows ? (
-                    <div className="review-screen">
-                      <p className="review-intro">
-                        These rows were excluded from automatic updates because the
-                        verification step could not confirm them confidently or the
-                        current settings preserved an existing value.
-                      </p>
-                      <div className="review-table-shell">
-                        <table className="review-table">
-                          <thead>
-                            <tr>
-                              <th scope="col">Bill</th>
-                              <th scope="col">Type</th>
-                              <th scope="col">Extracted customer</th>
-                              <th scope="col">Amount</th>
-                              <th scope="col">Verification</th>
-                              <th scope="col">Reason</th>
-                              <th scope="col">Candidates</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {reviewRows.map((row) => (
-                              <tr key={`${row.billType}-${row.billFile}-${row.reason}`}>
-                                <td className="review-cell-strong">{row.billFile}</td>
-                                <td>{row.billType}</td>
-                                <td>{row.extractedCustomer || "Not found"}</td>
-                                <td>{row.extractedAmount || "Not found"}</td>
-                                <td>
-                                  <span className="review-status-pill">Excluded</span>
-                                </td>
-                                <td>{formatReviewReason(row.reason)}</td>
-                                <td>{row.candidateSalesRows || row.bestScore || "None"}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    </div>
-                  ) : workbookPreview ? (
-                    <div className="ag-theme-quartz grid-theme">
-                      <AgGridReact<GridRow>
-                        theme="legacy"
-                        rowData={rowData}
-                        columnDefs={columnDefs}
-                        animateRows
-                        pagination
-                        paginationPageSize={20}
-                      />
-                    </div>
-                  ) : (
-                    <div className="empty-grid">
-                      Upload an Excel workbook to preview the worksheet grid.
-                    </div>
-                  )}
-                </div>
-              </div>
-            </section>
-          </>
+        {activeTab === "review" ? (
+          <ReviewWorkspace
+            artifacts={artifacts}
+            selectedArtifactId={selectedArtifactId}
+            previewMode={previewMode}
+            onSelectArtifact={(artifactId) => {
+              const artifact = artifacts.find((entry) => entry.id === artifactId) ?? null;
+              setSelectedArtifactId(artifactId);
+              setPreviewMode(artifact?.reviewRows?.length ? "review" : "worksheet");
+            }}
+            onPreviewModeChange={setPreviewMode}
+          />
         ) : (
-          <>
-            {/* Sales Register Mode UI */}
-            <header className="app-nav">
-              <div className="compact-header">
-                <p className="eyebrow">Generation workflow</p>
-                <h1>Sales Register Generator</h1>
-                <p className="compact-copy">
-                  Upload a raw invoice Excel workbook to generate a formatted
-                  Vehicle Sales Register with styled columns and calculated formulas.
-                </p>
-              </div>
-            </header>
+          <section className="workspace-grid">
+            <div className="control-panel">
+              {activeTab === "convert" ? (
+                <ConvertStagePanel
+                  rawFile={rawInvoiceFile}
+                  isProcessing={isGeneratingWorkbook}
+                  error={convertError}
+                  onRawFileChange={(file) => {
+                    setRawInvoiceFile(file);
+                    setConvertError(null);
+                  }}
+                  onRun={handleGenerateSalesRegister}
+                />
+              ) : null}
 
-            <section className="workspace-grid">
-              <div className="control-panel">
-                <div className="tab-card">
-                  <h2>Upload Invoice Export</h2>
-                  <p className="tab-hint">Upload the raw Excel invoice sheet (.xlsx) generated by your DMS/OEM.</p>
-                  
-                  <div className="upload-stack">
-                    <label className="field-label" htmlFor="sr-upload">
-                      Upload raw Excel file
-                    </label>
-                    <input
-                      id="sr-upload"
-                      name="sr-upload"
-                      type="file"
-                      accept=".xlsx,.xlsm"
-                      onChange={(e) => {
-                        const file = e.target.files?.[0] ?? null;
-                        setSrRawFile(file);
-                        setSrResult(null);
-                        setSrError(null);
-                        setSrPreview(null);
-                      }}
-                    />
-                    <div className="status-chip-row">
-                      <span className="status-chip">
-                        File: {srRawFile ? srRawFile.name : "Not loaded"}
-                      </span>
-                    </div>
-                  </div>
-                </div>
+              {activeTab === "rto" ? (
+                <UpdateStagePanel
+                  stageId="rto"
+                  title="Stage 2: Update RTO"
+                  hint="Use the generated workbook from stage 1 or resume directly with a workbook override, then apply only the RTO receipts."
+                  receiptFiles={rtoFiles}
+                  overrideState={rtoOverride}
+                  currentWorkbookName={currentWorkbook?.fileName ?? null}
+                  currentWorkbookStageLabel={
+                    currentWorkbook ? STAGE_LABELS[currentWorkbook.sourceStage] : null
+                  }
+                  effectiveWorkbookName={rtoEffectiveWorkbookName}
+                  effectiveWorkbookSource={rtoEffectiveWorkbookSource}
+                  isProcessing={isProcessingRto}
+                  error={rtoError}
+                  readinessMessage={rtoReadinessMessage}
+                  canRun={rtoCanRun}
+                  settings={settings}
+                  onSettingsChange={handleSettingsChange}
+                  onReceiptFilesChange={(files) => {
+                    setRtoFiles(files);
+                    setRtoError(null);
+                  }}
+                  onOverrideWorkbookChange={(file) => {
+                    void validateWorkbookOverride(file, setRtoOverride);
+                    setRtoError(null);
+                  }}
+                  onClearOverride={() => setRtoOverride(emptyOverrideState())}
+                  onRun={() => {
+                    void handleProcessStage("rto");
+                  }}
+                />
+              ) : null}
 
-                <div className="action-row">
-                  <button
-                    type="button"
-                    className="primary-button"
-                    onClick={handleGenerateSalesRegister}
-                    disabled={!srRawFile || srProcessing}
-                  >
-                    {srProcessing ? "Generating..." : "Generate Sales Register"}
-                  </button>
-                </div>
+              {activeTab === "insurance" ? (
+                <UpdateStagePanel
+                  stageId="insurance"
+                  title="Stage 3: Update Insurance"
+                  hint="Use the latest workbook output or resume directly with a workbook override, then apply only the insurance bills."
+                  receiptFiles={insuranceFiles}
+                  overrideState={insuranceOverride}
+                  currentWorkbookName={currentWorkbook?.fileName ?? null}
+                  currentWorkbookStageLabel={
+                    currentWorkbook ? STAGE_LABELS[currentWorkbook.sourceStage] : null
+                  }
+                  effectiveWorkbookName={insuranceEffectiveWorkbookName}
+                  effectiveWorkbookSource={insuranceEffectiveWorkbookSource}
+                  isProcessing={isProcessingInsurance}
+                  error={insuranceError}
+                  readinessMessage={insuranceReadinessMessage}
+                  canRun={insuranceCanRun}
+                  settings={settings}
+                  onSettingsChange={handleSettingsChange}
+                  onReceiptFilesChange={(files) => {
+                    setInsuranceFiles(files);
+                    setInsuranceError(null);
+                  }}
+                  onOverrideWorkbookChange={(file) => {
+                    void validateWorkbookOverride(file, setInsuranceOverride);
+                    setInsuranceError(null);
+                  }}
+                  onClearOverride={() => setInsuranceOverride(emptyOverrideState())}
+                  onRun={() => {
+                    void handleProcessStage("insurance");
+                  }}
+                />
+              ) : null}
+            </div>
 
-                {srError && (
-                  <p className="error-banner" role="alert">
-                    {srError}
-                  </p>
-                )}
-
-                {srResult && (
-                  <div className="sr-results-card">
-                    <h3>Generation Complete!</h3>
-                    <ul className="sr-results-list">
-                      <li>
-                        <span>Month/Year detected:</span>
-                        <strong>{srResult.monthYear}</strong>
-                      </li>
-                      <li>
-                        <span>Rows written:</span>
-                        <strong>{srResult.rowsWritten}</strong>
-                      </li>
-                    </ul>
-                    <div className="manual-cols-container">
-                      <div className="manual-cols-title">Manual entry columns to complete:</div>
-                      <div className="manual-cols-grid">
-                        {srResult.manualColumns.map((col) => (
-                          <span className="manual-col-chip" key={col}>
-                            {col}
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-                    <div className="action-row" style={{ marginTop: "18px" }}>
-                      <a href={srResult.downloadUrl} className="primary-button" style={{ display: "inline-flex", textDecoration: "none", alignItems: "center", justifyContent: "center" }}>
-                        Download Sales Register
-                      </a>
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              <div className="preview-panel">
-                <div className="preview-header">
-                  <div>
-                    <p className="eyebrow">Worksheet preview</p>
-                    <h2>
-                      {srPreview ? `SalesRegister_${srResult?.monthYear || ""}` : "Awaiting generation"}
-                    </h2>
-                  </div>
-                  {srResult && (
-                    <div className="preview-toolbar">
-                      <div className="result-links">
-                        <a href={srResult.downloadUrl}>Download generated register</a>
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                <div className="preview-meta" style={{ marginTop: "18px" }}>
-                  <span>
-                    {srPreview ? `${srPreview.headerRow.length} columns` : "0 columns"}
-                  </span>
-                  <span>
-                    {srPreview ? `${srPreview.rows.length} rows` : "0 rows"}
-                  </span>
-                </div>
-
-                <div className="grid-shell">
-                  {srPreview ? (
-                    <div className="ag-theme-quartz grid-theme">
-                      <AgGridReact<GridRow>
-                        theme="legacy"
-                        rowData={srRowData}
-                        columnDefs={srColumnDefs}
-                        animateRows
-                        pagination
-                        paginationPageSize={20}
-                      />
-                    </div>
-                  ) : (
-                    <div className="empty-grid">
-                      Upload and generate a sales register to see the preview.
-                    </div>
-                  )}
-                </div>
-              </div>
-            </section>
-          </>
+            <WorkflowSummaryPanel
+              currentWorkbook={currentWorkbook}
+              artifacts={artifacts}
+              onOpenReview={() => setActiveTab("review")}
+            />
+          </section>
         )}
       </div>
     </main>

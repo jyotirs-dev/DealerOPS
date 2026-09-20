@@ -1,26 +1,55 @@
-import type { ChangeEvent } from "react";
+import { useState } from "react";
 
-import type {
-  Settings,
-  UpdateStageId,
-  WorkbookOverrideState,
-} from "../workflowTypes";
+import { FIXED_HEADERS } from "../lib/workbook";
+import type { UpdateStageId, WorkflowArtifact, WorkingFile } from "../workflowTypes";
+import { FileDropZone } from "./FileDropZone";
+import { ArrowRightIcon, CheckIcon, FileIcon } from "./icons";
 
-function fileListToArray(fileList: FileList | null): File[] {
-  return fileList ? Array.from(fileList) : [];
+const ORIGIN_LABELS: Record<WorkingFile["origin"], string> = {
+  convert: "Carried forward from Stage 1",
+  rto: "Carried forward from Stage 2",
+  insurance: "Carried forward from Stage 3",
+  upload: "Uploaded manually",
+};
+
+type StageHeaderProps = {
+  eyebrow: string;
+  title: string;
+  description: string;
+};
+
+export function StageHeader({ eyebrow, title, description }: StageHeaderProps) {
+  return (
+    <header className="stage-header">
+      <span className="stage-eyebrow">{eyebrow}</span>
+      <h1>{title}</h1>
+      <p>{description}</p>
+    </header>
+  );
 }
 
-function renderFileList(files: File[]) {
-  if (files.length === 0) {
-    return <p className="empty-state">No files uploaded yet.</p>;
-  }
+type PriorStageBarProps = {
+  artifact: WorkflowArtifact;
+  detail: string;
+  onOpen: () => void;
+};
 
+export function PriorStageBar({ artifact, detail, onOpen }: PriorStageBarProps) {
   return (
-    <ul className="file-list">
-      {files.map((file) => (
-        <li key={`${file.name}-${file.size}`}>{file.name}</li>
-      ))}
-    </ul>
+    <div className="prior-stage-bar">
+      <span className="prior-stage-check">
+        <CheckIcon size={15} />
+      </span>
+      <div className="prior-stage-copy">
+        <strong>
+          {artifact.displayLabel} — {artifact.workbookFileName}
+        </strong>
+        <span>{detail}</span>
+      </div>
+      <button type="button" className="link-button" onClick={onOpen}>
+        View result
+      </button>
+    </div>
   );
 }
 
@@ -40,44 +69,33 @@ export function ConvertStagePanel({
   onRun,
 }: ConvertStagePanelProps) {
   return (
-    <div className="tab-card">
-      <h2>Stage 1: Convert raw export</h2>
-      <p className="tab-hint">
-        Upload the OEM / DMS raw invoice export and generate the styled Vehicle
-        Sales Register workbook with formulas.
-      </p>
+    <section className="stage-card">
+      <FileDropZone
+        id="convert-upload"
+        label="Upload raw invoice export"
+        accept=".xlsx,.xlsm"
+        hint="XLSX or XLSM — the raw OEM / DMS export"
+        files={rawFile ? [rawFile] : []}
+        onFilesChange={(files) => onRawFileChange(files[0] ?? null)}
+      />
 
-      <div className="upload-stack">
-        <label className="field-label" htmlFor="convert-upload">
-          Upload raw invoice export
-        </label>
-        <input
-          id="convert-upload"
-          name="convert-upload"
-          type="file"
-          accept=".xlsx,.xlsm"
-          onChange={(event) => onRawFileChange(event.target.files?.[0] ?? null)}
-        />
-        <div className="status-chip-row">
-          <span className="status-chip">
-            File: {rawFile ? rawFile.name : "Not loaded"}
-          </span>
-        </div>
-      </div>
+      <div className="stage-divider" />
 
-      <div className="action-row">
+      <div className="stage-action-row">
         <button
           type="button"
           className="primary-button"
           onClick={onRun}
           disabled={!rawFile || isProcessing}
         >
-          {isProcessing ? "Generating workbook..." : "Generate styled workbook"}
+          {isProcessing ? "Generating workbook…" : "Generate styled workbook"}
+          {isProcessing ? null : <ArrowRightIcon />}
         </button>
-        <p className="process-note">
-          This creates the base workbook used by the downstream RTO and
-          insurance update stages.
-        </p>
+        <span className="process-note">
+          {rawFile
+            ? "Creates the base workbook that Stages 2 and 3 update."
+            : "Upload a raw export to continue."}
+        </span>
       </div>
 
       {error ? (
@@ -85,234 +103,127 @@ export function ConvertStagePanel({
           {error}
         </p>
       ) : null}
-    </div>
-  );
-}
-
-type AdvancedSettingsPanelProps = {
-  settings: Settings;
-  onSettingsChange: (key: keyof Settings, value: string | boolean) => void;
-};
-
-export function AdvancedSettingsPanel({
-  settings,
-  onSettingsChange,
-}: AdvancedSettingsPanelProps) {
-  return (
-    <details className="advanced-panel">
-      <summary>Advanced parser settings</summary>
-      <div className="advanced-grid">
-        <label>
-          Customer labels
-          <input
-            type="text"
-            value={settings.customerLabels}
-            onChange={(event) =>
-              onSettingsChange("customerLabels", event.target.value)
-            }
-          />
-        </label>
-        <label>
-          Amount labels
-          <input
-            type="text"
-            value={settings.amountLabels}
-            onChange={(event) =>
-              onSettingsChange("amountLabels", event.target.value)
-            }
-          />
-        </label>
-        <label>
-          Amount position
-          <select
-            value={settings.amountPosition}
-            onChange={(event) =>
-              onSettingsChange(
-                "amountPosition",
-                event.target.value as Settings["amountPosition"],
-              )
-            }
-          >
-            <option value="same_line">On same line as label</option>
-            <option value="next_line">On next line after label</option>
-          </select>
-        </label>
-        <label>
-          Name threshold
-          <input
-            type="number"
-            min="0"
-            max="100"
-            step="0.1"
-            value={settings.nameThreshold}
-            onChange={(event) =>
-              onSettingsChange("nameThreshold", event.target.value)
-            }
-          />
-        </label>
-        <label className="checkbox-field">
-          <input
-            type="checkbox"
-            checked={settings.clearExisting}
-            onChange={(event) =>
-              onSettingsChange("clearExisting", event.target.checked)
-            }
-          />
-          Clear existing values in the targeted column before writing matches
-        </label>
-      </div>
-    </details>
+    </section>
   );
 }
 
 type UpdateStagePanelProps = {
   stageId: UpdateStageId;
-  title: string;
-  hint: string;
+  workingFile: WorkingFile | null;
+  workingFileError: string | null;
   receiptFiles: File[];
-  overrideState: WorkbookOverrideState;
-  currentWorkbookName: string | null;
-  currentWorkbookStageLabel: string | null;
-  effectiveWorkbookName: string | null;
-  effectiveWorkbookSource: string | null;
   isProcessing: boolean;
   error: string | null;
   readinessMessage: string;
   canRun: boolean;
-  settings: Settings;
-  onSettingsChange: (key: keyof Settings, value: string | boolean) => void;
+  onReplaceWorkingFile: (file: File | null) => void;
   onReceiptFilesChange: (files: File[]) => void;
-  onOverrideWorkbookChange: (file: File | null) => void;
-  onClearOverride: () => void;
   onRun: () => void;
 };
 
 export function UpdateStagePanel({
   stageId,
-  title,
-  hint,
+  workingFile,
+  workingFileError,
   receiptFiles,
-  overrideState,
-  currentWorkbookName,
-  currentWorkbookStageLabel,
-  effectiveWorkbookName,
-  effectiveWorkbookSource,
   isProcessing,
   error,
   readinessMessage,
   canRun,
-  settings,
-  onSettingsChange,
+  onReplaceWorkingFile,
   onReceiptFilesChange,
-  onOverrideWorkbookChange,
-  onClearOverride,
   onRun,
 }: UpdateStagePanelProps) {
+  const [isReplacing, setIsReplacing] = useState(false);
+  const showPicker = isReplacing || !workingFile;
+
   const receiptLabel =
-    stageId === "rto" ? "Upload RTO receipts" : "Upload insurance files";
-  const receiptAccept =
-    ".pdf,.png,.jpg,.jpeg,.tif,.tiff,.bmp,.webp";
+    stageId === "rto" ? "Upload RTO receipts" : "Upload insurance bills";
   const buttonLabel =
-    stageId === "rto" ? "Update RTO workbook" : "Update insurance workbook";
+    stageId === "rto" ? "Update RTO amounts" : "Update insurance amounts";
 
   return (
-    <>
-      <div className="tab-card">
-        <h2>{title}</h2>
-        <p className="tab-hint">{hint}</p>
-
-        <div className="workflow-support-card">
-          <div className="workflow-support-row">
-            <span className="workflow-support-label">Latest workbook</span>
-            <strong>{currentWorkbookName ?? "None yet"}</strong>
-          </div>
-          <p className="process-note">
-            {currentWorkbookName && currentWorkbookStageLabel
-              ? `Carried forward from ${currentWorkbookStageLabel}.`
-              : "No carried-forward workbook yet. Upload a workbook override to resume this stage directly."}
-          </p>
-        </div>
-
-        <div className="upload-stack">
-          <label className="field-label" htmlFor={`${stageId}-override`}>
-            Optional workbook override
-          </label>
-          <input
-            id={`${stageId}-override`}
-            name={`${stageId}-override`}
-            type="file"
-            accept=".xlsx,.xlsm"
-            onChange={(event) =>
-              onOverrideWorkbookChange(event.target.files?.[0] ?? null)
-            }
-          />
-          <div className="status-chip-row">
-            <span className="status-chip">
-              Override: {overrideState.fileName ?? "Not loaded"}
+    <section className="stage-card">
+      <div className="working-file-row">
+        <div className="working-file-identity">
+          <span className="working-file-icon">
+            <FileIcon />
+          </span>
+          <div>
+            <span className="working-file-caption">Working file</span>
+            <strong className="working-file-name">
+              {workingFile ? workingFile.fileName : "No workbook yet"}
+            </strong>
+            <span className="working-file-origin">
+              {workingFile
+                ? ORIGIN_LABELS[workingFile.origin]
+                : "Generate one in Stage 1, or upload one to resume here."}
             </span>
-            {effectiveWorkbookName ? (
-              <span className="status-chip">
-                Using: {effectiveWorkbookName}
-              </span>
-            ) : null}
-            {effectiveWorkbookSource ? (
-              <span className="status-chip">{effectiveWorkbookSource}</span>
-            ) : null}
           </div>
-          {overrideState.fileName ? (
-            <button
-              type="button"
-              className="secondary-button"
-              onClick={onClearOverride}
-            >
-              Clear workbook override
-            </button>
-          ) : null}
-          {overrideState.error ? (
-            <p className="error-banner" role="alert">
-              {overrideState.error}
-            </p>
-          ) : null}
         </div>
-
-        <div className="upload-stack">
-          <label className="field-label" htmlFor={`${stageId}-receipts`}>
-            {receiptLabel}
-          </label>
-          <input
-            id={`${stageId}-receipts`}
-            name={`${stageId}-receipts`}
-            type="file"
-            accept={receiptAccept}
-            multiple
-            onChange={(event: ChangeEvent<HTMLInputElement>) =>
-              onReceiptFilesChange(fileListToArray(event.target.files))
-            }
-          />
-          <span className="status-chip">{receiptFiles.length} files selected</span>
-          {renderFileList(receiptFiles)}
-        </div>
+        {workingFile ? (
+          <button
+            type="button"
+            className="secondary-button"
+            onClick={() => setIsReplacing((current) => !current)}
+          >
+            {isReplacing ? "Keep current file" : "Use a different file"}
+          </button>
+        ) : null}
       </div>
 
-      <AdvancedSettingsPanel
-        settings={settings}
-        onSettingsChange={onSettingsChange}
+      <div className="target-column-row">
+        <span className="target-column-caption">Target columns</span>
+        <span className="target-chip">{FIXED_HEADERS.customer}</span>
+        <span className="target-chip">{FIXED_HEADERS.insurance}</span>
+        <span className="target-chip">{FIXED_HEADERS.rto}</span>
+      </div>
+
+      {showPicker ? (
+        <FileDropZone
+          id={`${stageId}-workbook`}
+          label={workingFile ? "Replace working file" : "Upload a workbook"}
+          accept=".xlsx,.xlsm"
+          hint="XLSX or XLSM containing the target columns above"
+          files={[]}
+          onFilesChange={(files) => {
+            onReplaceWorkingFile(files[0] ?? null);
+            setIsReplacing(false);
+          }}
+        />
+      ) : null}
+
+      {workingFileError ? (
+        <p className="error-banner" role="alert">
+          {workingFileError}
+        </p>
+      ) : null}
+
+      <div className="stage-divider" />
+
+      <FileDropZone
+        id={`${stageId}-receipts`}
+        label={receiptLabel}
+        accept=".pdf,.png,.jpg,.jpeg,.tif,.tiff,.bmp,.webp"
+        hint="PDF, PNG, JPG, TIFF — multiple files supported"
+        files={receiptFiles}
+        multiple
+        onFilesChange={onReceiptFilesChange}
       />
 
-      <div className="action-row">
+      <div className="stage-divider" />
+
+      <div className="stage-action-row">
         <button
           type="button"
           className="primary-button"
           onClick={onRun}
           disabled={!canRun}
         >
-          {isProcessing ? "Processing workbook..." : buttonLabel}
+          {isProcessing ? "Processing workbook…" : buttonLabel}
+          {isProcessing ? null : <ArrowRightIcon />}
         </button>
-        <p className="process-note">{readinessMessage}</p>
-        <p className="process-note">
-          The updated workbook and any review rows will appear in Review &
-          Download after this stage completes.
-        </p>
+        <span className="process-note">{readinessMessage}</span>
       </div>
 
       {error ? (
@@ -320,6 +231,6 @@ export function UpdateStagePanel({
           {error}
         </p>
       ) : null}
-    </>
+    </section>
   );
 }

@@ -5,6 +5,13 @@ export type WorkflowTabId = WorkflowStageId | "review";
 export type UpdateStageId = "rto" | "insurance";
 export type PreviewMode = "worksheet" | "review";
 
+export type StageState =
+  | "waiting"
+  | "ready"
+  | "working"
+  | "completed"
+  | "attention";
+
 export type Settings = {
   customerLabels: string;
   amountLabels: string;
@@ -71,19 +78,12 @@ export type WorkflowArtifact = {
   completedOrder: number;
 };
 
-export type CurrentWorkbook = {
+export type WorkingFileOrigin = WorkflowStageId | "upload";
+
+export type WorkingFile = {
   file: File;
   preview: WorkbookPreview | null;
-  downloadUrl: string;
   fileName: string;
-  sourceStage: WorkflowStageId;
+  origin: WorkingFileOrigin;
+  downloadUrl?: string;
 };
-
-export type WorkbookOverrideState = {
-  file: File | null;
-  preview: WorkbookPreview | null;
-  error: string | null;
-  fileName: string | null;
-};
-
-export type StageTone = "neutral" | "ready" | "completed" | "warning" | "info";

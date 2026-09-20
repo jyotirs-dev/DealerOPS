@@ -1,48 +1,64 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
-import { FIXED_HEADERS, readWorkbookPreview } from "./lib/workbook";
+import { readWorkbookPreview } from "./lib/workbook";
+import type { WorkbookPreview } from "./lib/workbook";
 import { ReviewWorkspace } from "./components/ReviewWorkspace";
-import { StageTabs } from "./components/StageTabs";
+import { RunResultPanel } from "./components/RunResultPanel";
+import { WorkflowStepper } from "./components/WorkflowStepper";
+import type { StepperStage } from "./components/WorkflowStepper";
 import {
   ConvertStagePanel,
+  PriorStageBar,
+  StageHeader,
   UpdateStagePanel,
 } from "./components/StagePanels";
-import { WorkflowSummaryPanel } from "./components/WorkflowSummaryPanel";
+import {
+  DEFAULT_SETTINGS,
+  ExtractionSettingsDrawer,
+} from "./components/ExtractionSettingsDrawer";
 import type {
-  CurrentWorkbook,
-  PreviewMode,
   ProcessResponse,
   SalesRegisterResponse,
   Settings,
-  StageTone,
   UpdateStageId,
   WorkflowArtifact,
   WorkflowStageId,
   WorkflowTabId,
-  WorkbookOverrideState,
+  WorkingFile,
 } from "./workflowTypes";
-import type { WorkbookPreview } from "./lib/workbook";
 
-const DEFAULT_SETTINGS: Settings = {
-  customerLabels: "Insured, Insured Name, Received From",
-  amountLabels:
-    "Received with Thanks Rs, Grand Total (in Rs), Grand Total, Final Amount, Amount Payable, Net Payable",
-  amountPosition: "same_line",
-  nameThreshold: "95",
-  clearExisting: false,
-};
-
-const STAGE_TITLES: Record<WorkflowTabId, string> = {
-  convert: "Stage 1: Convert",
-  rto: "Stage 2: Update RTO",
-  insurance: "Stage 3: Update Insurance",
-  review: "Review & Download",
-};
-
-const STAGE_LABELS: Record<WorkflowStageId, string> = {
-  convert: "Stage 1",
-  rto: "Stage 2",
-  insurance: "Stage 3",
+const STAGE_COPY: Record<
+  WorkflowTabId,
+  { eyebrow: string; title: string; description: string; railLabel: string }
+> = {
+  convert: {
+    eyebrow: "Stage 1 of 4",
+    title: "Convert raw export",
+    description:
+      "Upload the OEM / DMS raw invoice export and generate the styled Vehicle Sales Register workbook with formulas.",
+    railLabel: "Stage 1 · Convert",
+  },
+  rto: {
+    eyebrow: "Stage 2 of 4",
+    title: "Update RTO amounts",
+    description:
+      "Match RTO receipts to sales rows and write the confirmed amounts into the working file. Nothing here changes insurance data.",
+    railLabel: "Stage 2 · Update RTO",
+  },
+  insurance: {
+    eyebrow: "Stage 3 of 4",
+    title: "Update insurance amounts",
+    description:
+      "Match insurance bills to sales rows and write the confirmed amounts into the working file. Nothing here changes RTO data.",
+    railLabel: "Stage 3 · Update Insurance",
+  },
+  review: {
+    eyebrow: "All outputs",
+    title: "Review & export",
+    description:
+      "Every completed stage stays here as a downloadable output. Compare results, check flagged rows, and export the final workbook.",
+    railLabel: "Review & Export",
+  },
 };
 
 const STAGE_NEXT_TAB: Record<WorkflowStageId, WorkflowTabId> = {
@@ -51,14 +67,11 @@ const STAGE_NEXT_TAB: Record<WorkflowStageId, WorkflowTabId> = {
   insurance: "review",
 };
 
-function emptyOverrideState(): WorkbookOverrideState {
-  return {
-    file: null,
-    preview: null,
-    error: null,
-    fileName: null,
-  };
-}
+const CONTINUE_LABELS: Record<WorkflowStageId, string> = {
+  convert: "Continue to Stage 2",
+  rto: "Continue to Stage 3",
+  insurance: "Continue to review",
+};
 
 function previewFromProcessResponse(
   result: ProcessResponse,
@@ -83,11 +96,7 @@ async function hydrateDownloadedWorkbook(
   downloadUrl: string,
   fallbackName: string,
   previewFallback: WorkbookPreview | null = null,
-): Promise<{
-  file: File;
-  preview: WorkbookPreview | null;
-  fileName: string;
-}> {
+): Promise<{ file: File; preview: WorkbookPreview | null; fileName: string }> {
   const workbookResponse = await fetch(downloadUrl);
   if (!workbookResponse.ok) {
     throw new Error("Failed to load generated workbook.");
@@ -96,8 +105,7 @@ async function hydrateDownloadedWorkbook(
   const workbookBlob = await workbookResponse.blob();
   const fileName = extractDownloadFileName(downloadUrl, fallbackName);
   const file = new File([workbookBlob], fileName, {
-    type:
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   });
 
   try {
@@ -125,137 +133,76 @@ function mergeArtifacts(
   return [
     ...artifacts.filter(
       (entry) =>
-        entry.stage !== artifact.stage && !invalidatedStages.includes(entry.stage),
+        entry.stage !== artifact.stage
+        && !invalidatedStages.includes(entry.stage),
     ),
     artifact,
   ].sort((left, right) => left.completedOrder - right.completedOrder);
 }
 
-type StageStatus = {
-  text: string;
-  tone: StageTone;
-};
+function describeArtifact(artifact: WorkflowArtifact): string {
+  if (artifact.summary) {
+    return `${artifact.summary.billsUpdated} values updated · ${artifact.summary.billsReview} flagged for review`;
+  }
+  return `${artifact.rowsWritten ?? 0} rows written · detected month ${artifact.monthYear || "unknown"}`;
+}
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<WorkflowTabId>("convert");
+  const [activeStage, setActiveStage] = useState<WorkflowTabId>("convert");
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [artifacts, setArtifacts] = useState<WorkflowArtifact[]>([]);
-  const [currentWorkbook, setCurrentWorkbook] = useState<CurrentWorkbook | null>(null);
-  const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(null);
-  const [previewMode, setPreviewMode] = useState<PreviewMode>("worksheet");
+  const [workingFile, setWorkingFile] = useState<WorkingFile | null>(null);
+  const [workingFileError, setWorkingFileError] = useState<string | null>(null);
+  const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(
+    null,
+  );
 
   const [rawInvoiceFile, setRawInvoiceFile] = useState<File | null>(null);
   const [convertError, setConvertError] = useState<string | null>(null);
   const [isGeneratingWorkbook, setIsGeneratingWorkbook] = useState(false);
 
   const [rtoFiles, setRtoFiles] = useState<File[]>([]);
-  const [rtoOverride, setRtoOverride] = useState<WorkbookOverrideState>(
-    emptyOverrideState(),
-  );
   const [rtoError, setRtoError] = useState<string | null>(null);
   const [isProcessingRto, setIsProcessingRto] = useState(false);
 
   const [insuranceFiles, setInsuranceFiles] = useState<File[]>([]);
-  const [insuranceOverride, setInsuranceOverride] = useState<WorkbookOverrideState>(
-    emptyOverrideState(),
-  );
   const [insuranceError, setInsuranceError] = useState<string | null>(null);
   const [isProcessingInsurance, setIsProcessingInsurance] = useState(false);
 
-  const convertArtifact = artifacts.find((artifact) => artifact.stage === "convert") ?? null;
-  const rtoArtifact = artifacts.find((artifact) => artifact.stage === "rto") ?? null;
-  const insuranceArtifact = artifacts.find((artifact) => artifact.stage === "insurance") ?? null;
-
-  const rtoBaseWorkbook = rtoOverride.file ?? currentWorkbook?.file ?? null;
-  const insuranceBaseWorkbook = insuranceOverride.file ?? currentWorkbook?.file ?? null;
-
-  const rtoEffectiveWorkbookName = rtoOverride.fileName ?? currentWorkbook?.fileName ?? null;
-  const insuranceEffectiveWorkbookName =
-    insuranceOverride.fileName ?? currentWorkbook?.fileName ?? null;
-
-  const rtoEffectiveWorkbookSource = rtoOverride.file
-    ? "Using workbook override"
-    : currentWorkbook
-      ? `Using latest workbook from ${STAGE_LABELS[currentWorkbook.sourceStage]}`
-      : null;
-
-  const insuranceEffectiveWorkbookSource = insuranceOverride.file
-    ? "Using workbook override"
-    : currentWorkbook
-      ? `Using latest workbook from ${STAGE_LABELS[currentWorkbook.sourceStage]}`
-      : null;
-
-  useEffect(() => {
-    if (artifacts.length === 0) {
-      setSelectedArtifactId(null);
-      setPreviewMode("worksheet");
-      return;
-    }
-
-    if (
-      selectedArtifactId
-      && artifacts.some((artifact) => artifact.id === selectedArtifactId)
-    ) {
-      return;
-    }
-
-    const latestArtifact = [...artifacts].sort(
-      (left, right) => right.completedOrder - left.completedOrder,
-    )[0];
-    setSelectedArtifactId(latestArtifact?.id ?? null);
-    setPreviewMode(
-      latestArtifact?.reviewRows?.length ? "review" : "worksheet",
-    );
-  }, [artifacts, selectedArtifactId]);
+  const convertArtifact =
+    artifacts.find((artifact) => artifact.stage === "convert") ?? null;
+  const rtoArtifact =
+    artifacts.find((artifact) => artifact.stage === "rto") ?? null;
+  const insuranceArtifact =
+    artifacts.find((artifact) => artifact.stage === "insurance") ?? null;
 
   function handleSettingsChange(
     key: keyof Settings,
     value: string | boolean,
   ) {
-    setSettings((current) => ({
-      ...current,
-      [key]: value,
-    }));
+    setSettings((current) => ({ ...current, [key]: value }));
   }
 
-  async function validateWorkbookOverride(
-    file: File | null,
-    setter: (nextState: WorkbookOverrideState) => void,
-  ) {
+  async function handleReplaceWorkingFile(file: File | null) {
     if (!file) {
-      setter(emptyOverrideState());
       return;
     }
 
+    setWorkingFileError(null);
     try {
       const preview = await readWorkbookPreview(file);
-      setter({
+      setWorkingFile({
         file,
         preview,
-        error: null,
         fileName: file.name,
+        origin: "upload",
       });
     } catch (error) {
-      setter({
-        file: null,
-        preview: null,
-        error:
-          error instanceof Error ? error.message : "Failed to read workbook.",
-        fileName: file.name,
-      });
+      setWorkingFileError(
+        error instanceof Error ? error.message : "Failed to read workbook.",
+      );
     }
-  }
-
-  function clearRtoStageState() {
-    setRtoFiles([]);
-    setRtoOverride(emptyOverrideState());
-    setRtoError(null);
-  }
-
-  function clearInsuranceStageState() {
-    setInsuranceFiles([]);
-    setInsuranceOverride(emptyOverrideState());
-    setInsuranceError(null);
   }
 
   async function handleGenerateSalesRegister() {
@@ -303,24 +250,20 @@ export default function App() {
         completedOrder,
       };
 
-      const nextArtifacts = mergeArtifacts(artifacts, artifact, [
-        "rto",
-        "insurance",
-      ]);
-
-      setArtifacts(nextArtifacts);
-      setCurrentWorkbook({
+      setArtifacts(mergeArtifacts(artifacts, artifact, ["rto", "insurance"]));
+      setWorkingFile({
         file: workbook.file,
         preview: workbook.preview,
-        downloadUrl: result.downloadUrl,
         fileName: workbook.fileName,
-        sourceStage: "convert",
+        origin: "convert",
+        downloadUrl: result.downloadUrl,
       });
       setSelectedArtifactId(artifact.id);
-      setPreviewMode("worksheet");
-      setActiveTab(STAGE_NEXT_TAB.convert);
-      clearRtoStageState();
-      clearInsuranceStageState();
+      setWorkingFileError(null);
+      setRtoFiles([]);
+      setInsuranceFiles([]);
+      setRtoError(null);
+      setInsuranceError(null);
     } catch (error) {
       setConvertError(
         error instanceof Error ? error.message : "Generation failed.",
@@ -332,23 +275,19 @@ export default function App() {
 
   async function handleProcessStage(stageId: UpdateStageId) {
     const isRto = stageId === "rto";
-    const baseWorkbook = isRto ? rtoBaseWorkbook : insuranceBaseWorkbook;
     const receiptFiles = isRto ? rtoFiles : insuranceFiles;
-    const overrideError = isRto ? rtoOverride.error : insuranceOverride.error;
     const setError = isRto ? setRtoError : setInsuranceError;
     const setProcessing = isRto ? setIsProcessingRto : setIsProcessingInsurance;
 
-    if (!baseWorkbook || receiptFiles.length === 0 || overrideError) {
+    if (!workingFile || receiptFiles.length === 0) {
       return;
     }
 
     const formData = new FormData();
-    formData.append("workbook", baseWorkbook);
-    if (isRto) {
-      receiptFiles.forEach((file) => formData.append("rto_files[]", file));
-    } else {
-      receiptFiles.forEach((file) => formData.append("insurance_files[]", file));
-    }
+    formData.append("workbook", workingFile.file);
+    receiptFiles.forEach((file) =>
+      formData.append(isRto ? "rto_files[]" : "insurance_files[]", file),
+    );
     formData.append("customer_labels", settings.customerLabels);
     formData.append("amount_labels", settings.amountLabels);
     formData.append("amount_position", settings.amountPosition);
@@ -386,40 +325,36 @@ export default function App() {
       const artifact: WorkflowArtifact = {
         id: `${stageId}-${completedOrder}`,
         stage: stageId,
-        displayLabel:
-          stageId === "rto" ? "RTO updated workbook" : "Insurance updated workbook",
+        displayLabel: isRto
+          ? "RTO updated workbook"
+          : "Insurance updated workbook",
         workbookDownloadUrl: result.downloadUrl,
         workbookFile: workbook.file,
         workbookPreview: workbook.preview,
         workbookFileName: workbook.fileName,
-        sourceWorkbookFileName: baseWorkbook.name,
+        sourceWorkbookFileName: workingFile.fileName,
         reviewCsvUrl: result.reviewCsvUrl,
         summary: result.summary,
         reviewRows: result.reviewRows,
         completedOrder,
       };
 
-      const invalidatedStages: WorkflowStageId[] =
-        stageId === "rto" ? ["insurance"] : [];
-      const nextArtifacts = mergeArtifacts(artifacts, artifact, invalidatedStages);
-
-      setArtifacts(nextArtifacts);
-      setCurrentWorkbook({
+      const invalidatedStages: WorkflowStageId[] = isRto ? ["insurance"] : [];
+      setArtifacts(mergeArtifacts(artifacts, artifact, invalidatedStages));
+      setWorkingFile({
         file: workbook.file,
         preview: workbook.preview,
-        downloadUrl: result.downloadUrl,
         fileName: workbook.fileName,
-        sourceStage: stageId,
+        origin: stageId,
+        downloadUrl: result.downloadUrl,
       });
       setSelectedArtifactId(artifact.id);
-      setPreviewMode(result.reviewRows.length > 0 ? "review" : "worksheet");
-      setActiveTab(STAGE_NEXT_TAB[stageId]);
 
       if (isRto) {
-        clearRtoStageState();
-        clearInsuranceStageState();
+        setRtoFiles([]);
+        setInsuranceFiles([]);
       } else {
-        clearInsuranceStageState();
+        setInsuranceFiles([]);
       }
     } catch (error) {
       setError(error instanceof Error ? error.message : "Processing failed.");
@@ -428,241 +363,228 @@ export default function App() {
     }
   }
 
-  function buildConvertStatus(): StageStatus {
-    if (isGeneratingWorkbook) {
-      return { text: "Working", tone: "info" };
-    }
-    if (convertArtifact) {
-      return { text: "Completed", tone: "completed" };
-    }
-    if (rawInvoiceFile) {
-      return { text: "Ready", tone: "ready" };
-    }
-    return { text: "Not started", tone: "neutral" };
-  }
-
-  function buildUpdateStatus(stageId: UpdateStageId): StageStatus {
+  function buildUpdateStage(stageId: UpdateStageId): StepperStage {
     const artifact = stageId === "rto" ? rtoArtifact : insuranceArtifact;
-    const isProcessing = stageId === "rto" ? isProcessingRto : isProcessingInsurance;
-    const overrideState = stageId === "rto" ? rtoOverride : insuranceOverride;
-    const baseWorkbook = stageId === "rto" ? rtoBaseWorkbook : insuranceBaseWorkbook;
+    const isProcessing =
+      stageId === "rto" ? isProcessingRto : isProcessingInsurance;
+    const receiptFiles = stageId === "rto" ? rtoFiles : insuranceFiles;
 
     if (isProcessing) {
-      return { text: "Working", tone: "info" };
+      return {
+        id: stageId,
+        label: STAGE_COPY[stageId].railLabel,
+        state: "working",
+        statusText: "Working…",
+      };
     }
     if (artifact) {
-      return { text: "Completed", tone: "completed" };
+      return {
+        id: stageId,
+        label: STAGE_COPY[stageId].railLabel,
+        state: "completed",
+        statusText: artifact.reviewRows?.length
+          ? `Completed · ${artifact.reviewRows.length} flagged`
+          : "Completed",
+      };
     }
-    if (overrideState.error || !baseWorkbook) {
-      return { text: "Needs workbook", tone: "warning" };
-    }
-    return { text: "Ready", tone: "ready" };
-  }
-
-  function buildReviewStatus(): StageStatus {
-    if (artifacts.length === 0) {
-      return { text: "Awaiting output", tone: "neutral" };
+    if (!workingFile) {
+      return {
+        id: stageId,
+        label: STAGE_COPY[stageId].railLabel,
+        state: "attention",
+        statusText: "Needs a working file",
+      };
     }
     return {
-      text: `${artifacts.length} artifact${artifacts.length === 1 ? "" : "s"}`,
-      tone: "completed",
+      id: stageId,
+      label: STAGE_COPY[stageId].railLabel,
+      state: "ready",
+      statusText:
+        receiptFiles.length > 0
+          ? `${receiptFiles.length} file${receiptFiles.length === 1 ? "" : "s"} ready`
+          : "Ready for files",
     };
   }
 
-  const convertStatus = buildConvertStatus();
-  const rtoStatus = buildUpdateStatus("rto");
-  const insuranceStatus = buildUpdateStatus("insurance");
-  const reviewStatus = buildReviewStatus();
-
-  const rtoCanRun =
-    Boolean(rtoBaseWorkbook)
-    && rtoFiles.length > 0
-    && !rtoOverride.error
-    && !isProcessingRto;
-  const insuranceCanRun =
-    Boolean(insuranceBaseWorkbook)
-    && insuranceFiles.length > 0
-    && !insuranceOverride.error
-    && !isProcessingInsurance;
-
-  const rtoReadinessMessage = isProcessingRto
-    ? "Processing workbook..."
-    : rtoOverride.error
-      ? "Clear or replace the invalid workbook override before running this stage."
-      : !rtoBaseWorkbook
-        ? "Generate stage 1 output first, or upload a workbook override to resume directly at RTO."
-        : rtoFiles.length === 0
-          ? "Upload at least one RTO receipt to continue."
-          : "Ready to update the RTO column in the current workbook.";
-
-  const insuranceReadinessMessage = isProcessingInsurance
-    ? "Processing workbook..."
-    : insuranceOverride.error
-      ? "Clear or replace the invalid workbook override before running this stage."
-      : !insuranceBaseWorkbook
-        ? "Generate stage 1 output first, or upload a workbook override to resume directly at insurance."
-        : insuranceFiles.length === 0
-          ? "Upload at least one insurance file to continue."
-          : "Ready to update the insurance column in the current workbook.";
-
-  const tabs = [
+  const stages: StepperStage[] = [
     {
-      id: "convert" as const,
-      label: STAGE_TITLES.convert,
-      status: convertStatus.text,
-      tone: convertStatus.tone,
+      id: "convert",
+      label: STAGE_COPY.convert.railLabel,
+      state: isGeneratingWorkbook
+        ? "working"
+        : convertArtifact
+          ? "completed"
+          : rawInvoiceFile
+            ? "ready"
+            : "waiting",
+      statusText: isGeneratingWorkbook
+        ? "Working…"
+        : convertArtifact
+          ? "Completed"
+          : rawInvoiceFile
+            ? "Ready to run"
+            : "Not started",
     },
+    buildUpdateStage("rto"),
+    buildUpdateStage("insurance"),
     {
-      id: "rto" as const,
-      label: STAGE_TITLES.rto,
-      status: rtoStatus.text,
-      tone: rtoStatus.tone,
-    },
-    {
-      id: "insurance" as const,
-      label: STAGE_TITLES.insurance,
-      status: insuranceStatus.text,
-      tone: insuranceStatus.tone,
-    },
-    {
-      id: "review" as const,
-      label: STAGE_TITLES.review,
-      status: reviewStatus.text,
-      tone: reviewStatus.tone,
+      id: "review",
+      label: STAGE_COPY.review.railLabel,
+      state: artifacts.length > 0 ? "completed" : "waiting",
+      statusText:
+        artifacts.length > 0
+          ? `${artifacts.length} output${artifacts.length === 1 ? "" : "s"}`
+          : "Awaiting output",
     },
   ];
 
-  return (
-    <main className="app-shell">
-      <div className="workspace-frame">
-        <header className="app-nav">
-          <div className="compact-header">
-            <p className="eyebrow">Guided workbook workflow</p>
-            <h1>Invoice conversion and staged bill updates</h1>
-            <p className="compact-copy">
-              Generate the styled sales workbook first, then update RTO and
-              insurance in separate guided stages. Every successful stage stays
-              reviewable and downloadable in one artifact workspace.
-            </p>
-            <div className="status-chip-row">
-              <span className="status-chip">{FIXED_HEADERS.customer}</span>
-              <span className="status-chip">{FIXED_HEADERS.insurance}</span>
-              <span className="status-chip">{FIXED_HEADERS.rto}</span>
-            </div>
-          </div>
+  function buildReadinessMessage(stageId: UpdateStageId): string {
+    const isProcessing =
+      stageId === "rto" ? isProcessingRto : isProcessingInsurance;
+    const receiptFiles = stageId === "rto" ? rtoFiles : insuranceFiles;
+    const noun = stageId === "rto" ? "RTO receipt" : "insurance bill";
 
-          <StageTabs
-            tabs={tabs}
-            activeTab={activeTab}
-            onSelect={setActiveTab}
+    if (isProcessing) {
+      return "Processing workbook…";
+    }
+    if (!workingFile) {
+      return `Generate Stage 1 first, or upload a workbook to resume at ${stageId === "rto" ? "RTO" : "insurance"}.`;
+    }
+    if (receiptFiles.length === 0) {
+      return `Upload at least one ${noun} to continue.`;
+    }
+
+    const rowCount = workingFile.preview?.rows.length;
+    return rowCount
+      ? `Ready to match ${receiptFiles.length} file${receiptFiles.length === 1 ? "" : "s"} against ${rowCount} sales rows.`
+      : `Ready to match ${receiptFiles.length} file${receiptFiles.length === 1 ? "" : "s"}.`;
+  }
+
+  function renderUpdateStage(stageId: UpdateStageId) {
+    const artifact = stageId === "rto" ? rtoArtifact : insuranceArtifact;
+    const priorArtifact =
+      stageId === "rto" ? convertArtifact : (rtoArtifact ?? convertArtifact);
+    const receiptFiles = stageId === "rto" ? rtoFiles : insuranceFiles;
+    const isProcessing =
+      stageId === "rto" ? isProcessingRto : isProcessingInsurance;
+    const canRun =
+      Boolean(workingFile) && receiptFiles.length > 0 && !isProcessing;
+
+    return (
+      <>
+        {priorArtifact ? (
+          <PriorStageBar
+            artifact={priorArtifact}
+            detail={describeArtifact(priorArtifact)}
+            onOpen={() => setActiveStage(priorArtifact.stage)}
           />
-        </header>
+        ) : null}
 
-        {activeTab === "review" ? (
+        <UpdateStagePanel
+          stageId={stageId}
+          workingFile={workingFile}
+          workingFileError={workingFileError}
+          receiptFiles={receiptFiles}
+          isProcessing={isProcessing}
+          error={stageId === "rto" ? rtoError : insuranceError}
+          readinessMessage={buildReadinessMessage(stageId)}
+          canRun={canRun}
+          onReplaceWorkingFile={(file) => {
+            void handleReplaceWorkingFile(file);
+          }}
+          onReceiptFilesChange={(files) => {
+            if (stageId === "rto") {
+              setRtoFiles(files);
+              setRtoError(null);
+            } else {
+              setInsuranceFiles(files);
+              setInsuranceError(null);
+            }
+          }}
+          onRun={() => {
+            void handleProcessStage(stageId);
+          }}
+        />
+
+        {artifact ? (
+          <RunResultPanel
+            key={artifact.id}
+            artifact={artifact}
+            title="Last run result"
+            compact
+            continueLabel={CONTINUE_LABELS[stageId]}
+            onContinue={() => setActiveStage(STAGE_NEXT_TAB[stageId])}
+          />
+        ) : null}
+      </>
+    );
+  }
+
+  const copy = STAGE_COPY[activeStage];
+
+  return (
+    <div className="app-shell">
+      <WorkflowStepper
+        stages={stages}
+        activeStage={activeStage}
+        workingFile={workingFile}
+        onSelectStage={setActiveStage}
+        onOpenSettings={() => setIsSettingsOpen(true)}
+      />
+
+      <main className="stage-region">
+        <StageHeader
+          eyebrow={copy.eyebrow}
+          title={copy.title}
+          description={copy.description}
+        />
+
+        {activeStage === "convert" ? (
+          <>
+            <ConvertStagePanel
+              rawFile={rawInvoiceFile}
+              isProcessing={isGeneratingWorkbook}
+              error={convertError}
+              onRawFileChange={(file) => {
+                setRawInvoiceFile(file);
+                setConvertError(null);
+              }}
+              onRun={() => {
+                void handleGenerateSalesRegister();
+              }}
+            />
+            {convertArtifact ? (
+              <RunResultPanel
+                key={convertArtifact.id}
+                artifact={convertArtifact}
+                title="Last run result"
+                compact
+                continueLabel={CONTINUE_LABELS.convert}
+                onContinue={() => setActiveStage(STAGE_NEXT_TAB.convert)}
+              />
+            ) : null}
+          </>
+        ) : null}
+
+        {activeStage === "rto" ? renderUpdateStage("rto") : null}
+        {activeStage === "insurance" ? renderUpdateStage("insurance") : null}
+
+        {activeStage === "review" ? (
           <ReviewWorkspace
             artifacts={artifacts}
             selectedArtifactId={selectedArtifactId}
-            previewMode={previewMode}
-            onSelectArtifact={(artifactId) => {
-              const artifact = artifacts.find((entry) => entry.id === artifactId) ?? null;
-              setSelectedArtifactId(artifactId);
-              setPreviewMode(artifact?.reviewRows?.length ? "review" : "worksheet");
-            }}
-            onPreviewModeChange={setPreviewMode}
+            onSelectArtifact={setSelectedArtifactId}
           />
-        ) : (
-          <section className="workspace-grid">
-            <div className="control-panel">
-              {activeTab === "convert" ? (
-                <ConvertStagePanel
-                  rawFile={rawInvoiceFile}
-                  isProcessing={isGeneratingWorkbook}
-                  error={convertError}
-                  onRawFileChange={(file) => {
-                    setRawInvoiceFile(file);
-                    setConvertError(null);
-                  }}
-                  onRun={handleGenerateSalesRegister}
-                />
-              ) : null}
+        ) : null}
+      </main>
 
-              {activeTab === "rto" ? (
-                <UpdateStagePanel
-                  stageId="rto"
-                  title="Stage 2: Update RTO"
-                  hint="Use the generated workbook from stage 1 or resume directly with a workbook override, then apply only the RTO receipts."
-                  receiptFiles={rtoFiles}
-                  overrideState={rtoOverride}
-                  currentWorkbookName={currentWorkbook?.fileName ?? null}
-                  currentWorkbookStageLabel={
-                    currentWorkbook ? STAGE_LABELS[currentWorkbook.sourceStage] : null
-                  }
-                  effectiveWorkbookName={rtoEffectiveWorkbookName}
-                  effectiveWorkbookSource={rtoEffectiveWorkbookSource}
-                  isProcessing={isProcessingRto}
-                  error={rtoError}
-                  readinessMessage={rtoReadinessMessage}
-                  canRun={rtoCanRun}
-                  settings={settings}
-                  onSettingsChange={handleSettingsChange}
-                  onReceiptFilesChange={(files) => {
-                    setRtoFiles(files);
-                    setRtoError(null);
-                  }}
-                  onOverrideWorkbookChange={(file) => {
-                    void validateWorkbookOverride(file, setRtoOverride);
-                    setRtoError(null);
-                  }}
-                  onClearOverride={() => setRtoOverride(emptyOverrideState())}
-                  onRun={() => {
-                    void handleProcessStage("rto");
-                  }}
-                />
-              ) : null}
-
-              {activeTab === "insurance" ? (
-                <UpdateStagePanel
-                  stageId="insurance"
-                  title="Stage 3: Update Insurance"
-                  hint="Use the latest workbook output or resume directly with a workbook override, then apply only the insurance bills."
-                  receiptFiles={insuranceFiles}
-                  overrideState={insuranceOverride}
-                  currentWorkbookName={currentWorkbook?.fileName ?? null}
-                  currentWorkbookStageLabel={
-                    currentWorkbook ? STAGE_LABELS[currentWorkbook.sourceStage] : null
-                  }
-                  effectiveWorkbookName={insuranceEffectiveWorkbookName}
-                  effectiveWorkbookSource={insuranceEffectiveWorkbookSource}
-                  isProcessing={isProcessingInsurance}
-                  error={insuranceError}
-                  readinessMessage={insuranceReadinessMessage}
-                  canRun={insuranceCanRun}
-                  settings={settings}
-                  onSettingsChange={handleSettingsChange}
-                  onReceiptFilesChange={(files) => {
-                    setInsuranceFiles(files);
-                    setInsuranceError(null);
-                  }}
-                  onOverrideWorkbookChange={(file) => {
-                    void validateWorkbookOverride(file, setInsuranceOverride);
-                    setInsuranceError(null);
-                  }}
-                  onClearOverride={() => setInsuranceOverride(emptyOverrideState())}
-                  onRun={() => {
-                    void handleProcessStage("insurance");
-                  }}
-                />
-              ) : null}
-            </div>
-
-            <WorkflowSummaryPanel
-              currentWorkbook={currentWorkbook}
-              artifacts={artifacts}
-              onOpenReview={() => setActiveTab("review")}
-            />
-          </section>
-        )}
-      </div>
-    </main>
+      <ExtractionSettingsDrawer
+        isOpen={isSettingsOpen}
+        settings={settings}
+        onSettingsChange={handleSettingsChange}
+        onReset={() => setSettings(DEFAULT_SETTINGS)}
+        onClose={() => setIsSettingsOpen(false)}
+      />
+    </div>
   );
 }

@@ -90,3 +90,30 @@ data shapes, not UI structure, so the backend contract (`/api/generate-sales-reg
 
 Each phase ships independently and keeps the app working end to end, so it can land as separate
 PRs rather than one large rewrite.
+
+## Implementation status
+
+All six phases are implemented on this branch. New components: `WorkflowStepper`,
+`ExtractionSettingsDrawer`, `RunResultPanel`, `FileDropZone`, `icons`. Removed: `StageTabs`,
+`WorkflowSummaryPanel`. The backend and its API contract are untouched.
+
+Two deliberate deviations from the mockups:
+
+1. **Stages are never actually locked.** The mockup greys out later stages with a padlock, but the
+   app genuinely supports resuming at any stage by supplying your own workbook, and hiding that
+   would remove a real capability. Later stages stay clickable and read "Needs a working file"
+   instead of "Locked".
+2. **One working file, not one override per stage.** Previously an override set on RTO did not
+   affect Insurance. Now there is a single working file that flows through the workflow and can be
+   replaced at any point, which is what the sidebar advertises. Replacing it therefore affects
+   every stage from that point on — this is the intended behavior change, not an oversight.
+
+Note on tests: `frontend/src/App.test.tsx` was already failing on `main` before this work (all 6
+tests), because it targeted a pre-staged-workflow UI that no longer existed. It has been rewritten
+against the new interface and now covers stage navigation, the resume-from-upload path, inline
+results, shared settings propagation into the request body, review rows, and error states —
+12 tests, all passing.
+
+The UI has not been click-tested in a real browser: no browser automation was available in the
+session that implemented it. Verification was the test suite, `tsc`, a production build, and a dev
+server transform check of every module.

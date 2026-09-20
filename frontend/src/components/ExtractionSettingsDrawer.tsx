@@ -150,7 +150,7 @@ export function ExtractionSettingsDrawer({
               type="range"
               min="0"
               max="100"
-              step="1"
+              step="0.1"
               value={settings.nameThreshold}
               onChange={(event) =>
                 onSettingsChange("nameThreshold", event.target.value)

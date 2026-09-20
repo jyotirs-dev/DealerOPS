@@ -527,6 +527,12 @@ a {
   color: var(--muted);
 }
 
+.dropzone-error {
+  font-size: 0.78rem;
+  color: var(--danger);
+  font-weight: 600;
+}
+
 .dropzone-input {
   position: absolute;
   width: 1px;

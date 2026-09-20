@@ -607,6 +607,158 @@ def _looks_like_pay_in_slip(text: str) -> bool:
     return all(marker in normalized for marker in ("pay in slip", "policy details", "premium"))
 
 
+# Compiled once at import time — reused for every record in every pay-in-slip.
+_PAY_IN_SLIP_DATE_RE = re.compile(
+    r'\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2}(?:\s+\d{4})?\b',
+    re.IGNORECASE,
+)
+_PAY_IN_SLIP_YEAR_RE = re.compile(r'\b20\d{2}\b')
+_PAY_IN_SLIP_STATUS_RE = re.compile(r'\b(?:Fresh|Renewal)\b', re.IGNORECASE)
+_HONORIFIC_TITLE_RE = re.compile(
+    r"\b(?:mr|mrs|ms|m)\.?\s+([a-zA-Z ]+)$",
+    flags=re.IGNORECASE,
+)
+
+
+def _missing_pay_in_slip_rows_result(text: str, file_name: str) -> list[BillParseResult]:
+    """Single-item error result used when the slip's row boundaries can't be found."""
+    return [
+        BillParseResult(
+            bill_type="insurance",
+            file_name=file_name,
+            raw_text=text,
+            extraction_error="PAY_IN_SLIP_ROWS_NOT_FOUND",
+        )
+    ]
+
+
+def _find_pay_in_slip_data_bounds(lines: list[str]) -> tuple[int, int] | None:
+    """
+    Locate the data section of a pay-in-slip: from the first serial number
+    ("1") after the "policy details" heading, up to (but excluding) the
+    "total amount" summary line. Returns ``None`` if the start marker is
+    missing, since there is nothing to parse without it.
+    """
+    policy_details_idx = next(
+        (idx for idx, line in enumerate(lines) if "policy details" in line.lower()),
+        None,
+    )
+    if policy_details_idx is None:
+        return None
+
+    start_idx = next(
+        (
+            idx
+            for idx in range(policy_details_idx, len(lines))
+            if lines[idx] == "1"
+        ),
+        None,
+    )
+    if start_idx is None:
+        return None
+
+    end_idx = next(
+        (
+            idx
+            for idx in range(start_idx, len(lines))
+            if "total amount" in lines[idx].lower()
+        ),
+        len(lines),
+    )
+    return start_idx, end_idx
+
+
+def _split_pay_in_slip_records(data_lines: list[str]) -> list[list[str]]:
+    """
+    Split the data section into one line-group per serial number.
+
+    Serial numbers increase by exactly 1 per record (a plain string match
+    on "1", "2", "3", ... marks each record's start line).
+    """
+    serial_indices: list[int] = []
+    next_serial = 1
+    for idx, line in enumerate(data_lines):
+        if line.strip() == str(next_serial):
+            serial_indices.append(idx)
+            next_serial += 1
+
+    records: list[list[str]] = []
+    for position, start in enumerate(serial_indices):
+        end = (
+            serial_indices[position + 1]
+            if position + 1 < len(serial_indices)
+            else len(data_lines)
+        )
+        records.append(data_lines[start + 1:end])
+    return records
+
+
+def _extract_pay_in_slip_customer_name(name_field_lines: list[str]) -> str:
+    """
+    Recover the bare customer name from the record's name field.
+
+    The field also carries a policy start date, a renewal year, and a
+    Fresh/Renewal status token, so those are stripped before an optional
+    honorific (Mr/Mrs/Ms) is peeled off.
+    """
+    merged = " ".join(name_field_lines)
+    merged = _PAY_IN_SLIP_DATE_RE.sub("", merged)
+    merged = _PAY_IN_SLIP_YEAR_RE.sub("", merged)
+    merged = _PAY_IN_SLIP_STATUS_RE.sub("", merged)
+
+    cleaned_name = merged.replace(".", " ").replace(",", " ")
+    cleaned_name = " ".join(cleaned_name.split()).strip()
+
+    title_match = _HONORIFIC_TITLE_RE.search(cleaned_name)
+    return title_match.group(1).strip() if title_match else cleaned_name
+
+
+def _parse_pay_in_slip_record(
+    record_lines: list[str],
+    serial_number: int,
+    file_name: str,
+) -> BillParseResult:
+    """Parse one pay-in-slip record (one row of the slip's data table) into a BillParseResult."""
+    tagged_file_name = f"{file_name} [S.No. {serial_number}]"
+
+    if len(record_lines) < 4:
+        return BillParseResult(
+            bill_type="insurance",
+            file_name=tagged_file_name,
+            raw_text="\n".join(record_lines),
+            extraction_error="PAY_IN_SLIP_RECORD_MALFORMED",
+        )
+
+    premium_str = record_lines[-1].strip()
+    name_field_lines = record_lines[1:-2]
+    customer_name: str | None = _extract_pay_in_slip_customer_name(name_field_lines)
+
+    try:
+        amount: Decimal | None = Decimal(premium_str.replace(",", ""))
+    except (InvalidOperation, ValueError):
+        amount = None
+
+    customer_error = None
+    amount_error = None
+
+    if not customer_name or not _is_likely_customer_name(customer_name):
+        customer_error = "PAY_IN_SLIP_CUSTOMER_NOT_FOUND"
+        customer_name = None
+
+    if amount is None:
+        amount_error = "PAY_IN_SLIP_PREMIUM_NOT_FOUND"
+
+    return BillParseResult(
+        bill_type="insurance",
+        file_name=tagged_file_name,
+        raw_text="\n".join(record_lines),
+        customer_name=customer_name,
+        amount=amount,
+        customer_error=customer_error,
+        amount_error=amount_error,
+    )
+
+
 def extract_pay_in_slip_rows(
     text: str,
     file_name: str,
@@ -626,133 +778,18 @@ def extract_pay_in_slip_rows(
         if (cleaned := " ".join(raw_line.replace("\xa0", " ").split()).strip())
     ]
 
-    # Find start of data (line '1' after 'policy details')
-    start_idx = None
-    policy_details_idx = None
-    for idx, line in enumerate(lines):
-        if "policy details" in line.lower():
-            policy_details_idx = idx
-            break
-
-    if policy_details_idx is not None:
-        for idx in range(policy_details_idx, len(lines)):
-            if lines[idx] == "1":
-                start_idx = idx
-                break
-
-    if start_idx is None:
-        return [
-            BillParseResult(
-                bill_type="insurance",
-                file_name=file_name,
-                raw_text=text,
-                extraction_error="PAY_IN_SLIP_ROWS_NOT_FOUND",
-            )
-        ]
-
-    # Find end of data (line containing 'total amount')
-    end_idx = len(lines)
-    for idx in range(start_idx, len(lines)):
-        if "total amount" in lines[idx].lower():
-            end_idx = idx
-            break
+    bounds = _find_pay_in_slip_data_bounds(lines)
+    if bounds is None:
+        return _missing_pay_in_slip_rows_result(text, file_name)
+    start_idx, end_idx = bounds
 
     data_lines = lines[start_idx:end_idx]
-
-    # Group records by serial numbers
-    serial_indices: list[int] = []
-    next_serial = 1
-    for idx, line in enumerate(data_lines):
-        if line.strip() == str(next_serial):
-            serial_indices.append(idx)
-            next_serial += 1
-
-    records: list[list[str]] = []
-    for i in range(len(serial_indices)):
-        start = serial_indices[i]
-        end = serial_indices[i+1] if i + 1 < len(serial_indices) else len(data_lines)
-        records.append(data_lines[start+1:end])
-
+    records = _split_pay_in_slip_records(data_lines)
     if not records:
-        return [
-            BillParseResult(
-                bill_type="insurance",
-                file_name=file_name,
-                raw_text=text,
-                extraction_error="PAY_IN_SLIP_ROWS_NOT_FOUND",
-            )
-        ]
+        return _missing_pay_in_slip_rows_result(text, file_name)
 
-    date_pattern = re.compile(
-        r'\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2}(?:\s+\d{4})?\b',
-        re.IGNORECASE
-    )
-    year_pattern = re.compile(r'\b20\d{2}\b')
-    status_pattern = re.compile(r'\b(?:Fresh|Renewal)\b', re.IGNORECASE)
-
-    results: list[BillParseResult] = []
-    for idx, record in enumerate(records, start=1):
-        if len(record) < 4:
-            results.append(
-                BillParseResult(
-                    bill_type="insurance",
-                    file_name=f"{file_name} [S.No. {idx}]",
-                    raw_text="\n".join(record),
-                    extraction_error="PAY_IN_SLIP_RECORD_MALFORMED",
-                )
-            )
-            continue
-
-        policy_no = record[0].strip()
-        premium_str = record[-1].strip()
-        intermediate = record[1:-2]
-
-        # Extract customer name
-        merged = " ".join(intermediate)
-        merged_no_date = date_pattern.sub("", merged)
-        merged_no_year = year_pattern.sub("", merged_no_date)
-        merged_no_status = status_pattern.sub("", merged_no_year)
-
-        cleaned_name = merged_no_status.replace(".", " ").replace(",", " ")
-        cleaned_name = " ".join(cleaned_name.split()).strip()
-
-        # Title clean (matches Mr, Mrs, Ms honorifics)
-        title_match = re.search(
-            r"\b(?:mr|mrs|ms|m)\.?\s+([a-zA-Z ]+)$",
-            cleaned_name,
-            flags=re.IGNORECASE,
-        )
-        if title_match:
-            customer_name = title_match.group(1).strip()
-        else:
-            customer_name = cleaned_name
-
-        try:
-            amount = Decimal(premium_str.replace(",", ""))
-        except (InvalidOperation, ValueError):
-            amount = None
-
-        customer_error = None
-        amount_error = None
-
-        if not customer_name or not _is_likely_customer_name(customer_name):
-            customer_error = "PAY_IN_SLIP_CUSTOMER_NOT_FOUND"
-            customer_name = None
-
-        if amount is None:
-            amount_error = "PAY_IN_SLIP_PREMIUM_NOT_FOUND"
-
-        results.append(
-            BillParseResult(
-                bill_type="insurance",
-                file_name=f"{file_name} [S.No. {idx}]",
-                raw_text="\n".join(record),
-                customer_name=customer_name,
-                amount=amount,
-                customer_error=customer_error,
-                amount_error=amount_error,
-            )
-        )
-
-    return results
+    return [
+        _parse_pay_in_slip_record(record, serial_number, file_name)
+        for serial_number, record in enumerate(records, start=1)
+    ]
 

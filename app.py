@@ -7,6 +7,7 @@ The core extraction and matching logic remains in ``insurance_rto_updater``.
 from __future__ import annotations
 
 import os
+import re
 import uuid
 from dataclasses import asdict
 from pathlib import Path
@@ -201,39 +202,65 @@ def spa_fallback(path: str):  # type: ignore[no-untyped-def]
     return _frontend_index_response()
 
 
+def _files_by_either_field_name(primary_field: str, legacy_field: str) -> list[Any]:
+    """
+    Look up an uploaded file list under either field-name spelling.
+
+    The frontend sends array-style field names (``insurance_files[]``), but
+    older/manual multipart submissions may omit the brackets — both must be
+    accepted so neither client shape silently loses uploads.
+    """
+    uploads = request.files.getlist(primary_field)
+    if not uploads:
+        uploads = request.files.getlist(legacy_field)
+    return uploads
+
+
+def _persist_process_job_uploads(
+    job_id: str,
+    workbook_upload: Any,
+    insurance_uploads: list[Any],
+    rto_uploads: list[Any],
+) -> tuple[Path, list[Path], list[Path]]:
+    """Save the workbook and all bill uploads for one /api/process job to disk."""
+    upload_dir = UPLOAD_ROOT / job_id
+
+    workbook_path = _save_uploaded_workbook(
+        workbook_upload,
+        upload_dir / "workbook",
+    )
+    insurance_paths = _save_uploaded_files(
+        insurance_uploads,
+        upload_dir / "insurance",
+        ALLOWED_BILL_EXTENSIONS,
+    )
+    rto_paths = _save_uploaded_files(
+        rto_uploads,
+        upload_dir / "rto",
+        ALLOWED_BILL_EXTENSIONS,
+    )
+    return workbook_path, insurance_paths, rto_paths
+
+
 @app.post("/api/process")
 def process_files():  # type: ignore[no-untyped-def]
     try:
         config = _parse_processing_config()
 
         workbook_upload = request.files.get("workbook")
-        insurance_uploads = request.files.getlist("insurance_files[]")
-        if not insurance_uploads:
-            insurance_uploads = request.files.getlist("insurance_files")
-        rto_uploads = request.files.getlist("rto_files[]")
-        if not rto_uploads:
-            rto_uploads = request.files.getlist("rto_files")
+        insurance_uploads = _files_by_either_field_name(
+            "insurance_files[]", "insurance_files"
+        )
+        rto_uploads = _files_by_either_field_name("rto_files[]", "rto_files")
 
         if not insurance_uploads and not rto_uploads:
             raise ValueError("Upload at least one insurance or RTO bill.")
 
         job_id = uuid.uuid4().hex
-        upload_dir = UPLOAD_ROOT / job_id
         output_dir = OUTPUT_ROOT / job_id
 
-        workbook_path = _save_uploaded_workbook(
-            workbook_upload,
-            upload_dir / "workbook",
-        )
-        insurance_paths = _save_uploaded_files(
-            insurance_uploads,
-            upload_dir / "insurance",
-            ALLOWED_BILL_EXTENSIONS,
-        )
-        rto_paths = _save_uploaded_files(
-            rto_uploads,
-            upload_dir / "rto",
-            ALLOWED_BILL_EXTENSIONS,
+        workbook_path, insurance_paths, rto_paths = _persist_process_job_uploads(
+            job_id, workbook_upload, insurance_uploads, rto_uploads
         )
 
         workbook_adapter = LocalWorkbookAdapter(workbook_path)
@@ -255,9 +282,8 @@ def process_files():  # type: ignore[no-untyped-def]
             write_plan=write_plan,
         )
 
-        updated_workbook_name = (
-            f"{workbook_path.stem}_updated{workbook_path.suffix.lower()}"
-        )
+        base_stem = re.sub(r"(?:_updated)+$", "", workbook_path.stem)
+        updated_workbook_name = f"{base_stem}{workbook_path.suffix.lower()}"
         workbook_adapter.save_copy(output_dir / updated_workbook_name)
         header_row, rows = workbook_adapter.sheet_preview(sheet_data.sheet_title)
 
@@ -315,7 +341,16 @@ def generate_sales_register_endpoint():  # type: ignore[no-untyped-def]
             output_path=output_dir / f"DurgaDarshanSalesList{job_id[:8]}.xlsx",
         )
 
-        output_name = result.output_path.name
+        final_name = (
+            f"DurgaDarshanSalesList_{result.month_year}.xlsx"
+            if result.month_year
+            else f"DurgaDarshanSalesList_{job_id[:8]}.xlsx"
+        )
+        final_path = output_dir / final_name
+        if final_path != result.output_path:
+            result.output_path.rename(final_path)
+
+        output_name = final_path.name
 
         return jsonify({
             "jobId": job_id,

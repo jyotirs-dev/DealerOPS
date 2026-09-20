@@ -353,6 +353,7 @@ export default function App() {
       if (isRto) {
         setRtoFiles([]);
         setInsuranceFiles([]);
+        setInsuranceError(null);
       } else {
         setInsuranceFiles([]);
       }
@@ -450,6 +451,9 @@ export default function App() {
     if (!workingFile) {
       return `Generate Stage 1 first, or upload a workbook to resume at ${stageId === "rto" ? "RTO" : "insurance"}.`;
     }
+    if (workingFileError) {
+      return "Clear or replace the invalid workbook before running this stage.";
+    }
     if (receiptFiles.length === 0) {
       return `Upload at least one ${noun} to continue.`;
     }
@@ -468,7 +472,10 @@ export default function App() {
     const isProcessing =
       stageId === "rto" ? isProcessingRto : isProcessingInsurance;
     const canRun =
-      Boolean(workingFile) && receiptFiles.length > 0 && !isProcessing;
+      Boolean(workingFile) &&
+      !workingFileError &&
+      receiptFiles.length > 0 &&
+      !isProcessing;
 
     return (
       <>

@@ -17,6 +17,7 @@ appropriate module in ``domain/``, ``extraction/``, or ``validation/``.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from insurance_rto_updater.domain.amounts import finalize_bill_amount
@@ -38,6 +39,7 @@ from insurance_rto_updater.models import (
     BillParseResult,
     ProcessingConfig,
     ProcessingResult,
+    SalesRow,
     SheetWritePlan,
 )
 from insurance_rto_updater.output.csv_writer import write_review_csv
@@ -128,6 +130,76 @@ def _bill_to_review_row(bill: BillParseResult) -> ReviewRow:
 
 
 # ---------------------------------------------------------------------------
+# Internal: process every uploaded bill against the sheet's sales rows
+# ---------------------------------------------------------------------------
+
+@dataclass
+class _BillBatchOutcome:
+    """Accumulated results of extracting, parsing, and assigning every bill."""
+
+    review_rows: list[ReviewRow] = field(default_factory=list)
+    assignments: list[Assignment] = field(default_factory=list)
+    bills_processed: int = 0
+    parse_failures: int = 0
+    no_match: int = 0
+    multi_match: int = 0
+
+
+def _process_bill_batch(
+    bill_specs: list[tuple[str, Path]],
+    sales_rows: list[SalesRow],
+    config: ProcessingConfig,
+) -> _BillBatchOutcome:
+    """
+    Extract, parse, and assign every uploaded bill to a sales row.
+
+    One bill file can expand into multiple `BillParseResult` entries (e.g.
+    insurance MIS reports list several customers per file), so this counts
+    and assigns at the level of parsed entries, not files.
+    """
+    outcome = _BillBatchOutcome()
+
+    for bill_type, path in bill_specs:
+        for bill in _parse_bill_entries(bill_type, path, config):
+            outcome.bills_processed += 1
+
+            # If extraction or parsing failed, send straight to review.
+            if bill.extraction_error or bill.amount_error:
+                outcome.parse_failures += 1
+                outcome.review_rows.append(_bill_to_review_row(bill))
+                continue
+
+            if bill.customer_error:
+                if bill.customer_error == "CUSTOMER_LABEL_NOT_FOUND":
+                    filename_assignment = assign_bill_to_row_by_filename_first_name(
+                        bill,
+                        sales_rows,
+                    )
+                    if filename_assignment is not None:
+                        outcome.assignments.append(filename_assignment)
+                        continue
+
+                outcome.parse_failures += 1
+                outcome.review_rows.append(_bill_to_review_row(bill))
+                continue
+
+            # Attempt to assign this bill to a sheet row.
+            result = assign_bill_to_row(bill, sales_rows, config.name_threshold)
+
+            if isinstance(result, Assignment):
+                outcome.assignments.append(result)
+            else:
+                # result is a ReviewRow — track the specific failure type.
+                if result.reason == "NO_MATCH":
+                    outcome.no_match += 1
+                elif result.reason == "MULTIPLE_SALES_ROWS":
+                    outcome.multi_match += 1
+                outcome.review_rows.append(result)
+
+    return outcome
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -191,52 +263,15 @@ def run_processing_pipeline(
     }
 
     # Steps 3–4: extract, parse, and assign each bill.
-    review_rows: list[ReviewRow] = []
-    assignments: list[Assignment] = []
-    bills_processed = 0
-    parse_failures = 0
-    no_match = 0
-    multi_match = 0
-
-    for bill_type, path in bill_specs:
-        for bill in _parse_bill_entries(bill_type, path, config):
-            bills_processed += 1
-
-            # If extraction or parsing failed, send straight to review.
-            if bill.extraction_error or bill.amount_error:
-                parse_failures += 1
-                review_rows.append(_bill_to_review_row(bill))
-                continue
-
-            if bill.customer_error:
-                if bill.customer_error == "CUSTOMER_LABEL_NOT_FOUND":
-                    filename_assignment = assign_bill_to_row_by_filename_first_name(
-                        bill,
-                        sales_rows,
-                    )
-                    if filename_assignment is not None:
-                        assignments.append(filename_assignment)
-                        continue
-
-                parse_failures += 1
-                review_rows.append(_bill_to_review_row(bill))
-                continue
-
-            # Attempt to assign this bill to a sheet row.
-            result = assign_bill_to_row(bill, sales_rows, config.name_threshold)
-
-            if isinstance(result, Assignment):
-                assignments.append(result)
-            else:
-                # result is a ReviewRow — track the specific failure type.
-                if result.reason == "NO_MATCH":
-                    no_match += 1
-                elif result.reason == "MULTIPLE_SALES_ROWS":
-                    multi_match += 1
-                review_rows.append(result)
+    batch_outcome = _process_bill_batch(bill_specs, sales_rows, config)
+    review_rows = batch_outcome.review_rows
+    bills_processed = batch_outcome.bills_processed
+    parse_failures = batch_outcome.parse_failures
+    no_match = batch_outcome.no_match
+    multi_match = batch_outcome.multi_match
 
     # Step 5: detect row-level conflicts (multiple bills → same row+type).
-    accepted, conflict_reviews = detect_row_conflicts(assignments)
+    accepted, conflict_reviews = detect_row_conflicts(batch_outcome.assignments)
     row_conflicts = sum(
         len(r.bill_file.split(", ")) for r in conflict_reviews
     )

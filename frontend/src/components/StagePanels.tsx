@@ -1,16 +1,10 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { FIXED_HEADERS } from "../lib/workbook";
 import type { UpdateStageId, WorkflowArtifact, WorkingFile } from "../workflowTypes";
+import { WORKING_FILE_ORIGIN_LABELS } from "../workflowTypes";
 import { FileDropZone } from "./FileDropZone";
 import { ArrowRightIcon, CheckIcon, FileIcon } from "./icons";
-
-const ORIGIN_LABELS: Record<WorkingFile["origin"], string> = {
-  convert: "Carried forward from Stage 1",
-  rto: "Carried forward from Stage 2",
-  insurance: "Carried forward from Stage 3",
-  upload: "Uploaded manually",
-};
 
 type StageHeaderProps = {
   eyebrow: string;
@@ -137,6 +131,12 @@ export function UpdateStagePanel({
   const [isReplacing, setIsReplacing] = useState(false);
   const showPicker = isReplacing || !workingFile;
 
+  useEffect(() => {
+    if (workingFile && !workingFileError) {
+      setIsReplacing(false);
+    }
+  }, [workingFile, workingFileError]);
+
   const receiptLabel =
     stageId === "rto" ? "Upload RTO receipts" : "Upload insurance bills";
   const buttonLabel =
@@ -156,7 +156,7 @@ export function UpdateStagePanel({
             </strong>
             <span className="working-file-origin">
               {workingFile
-                ? ORIGIN_LABELS[workingFile.origin]
+                ? WORKING_FILE_ORIGIN_LABELS[workingFile.origin]
                 : "Generate one in Stage 1, or upload one to resume here."}
             </span>
           </div>
@@ -188,7 +188,6 @@ export function UpdateStagePanel({
           files={[]}
           onFilesChange={(files) => {
             onReplaceWorkingFile(files[0] ?? null);
-            setIsReplacing(false);
           }}
         />
       ) : null}

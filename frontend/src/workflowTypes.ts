@@ -87,3 +87,10 @@ export type WorkingFile = {
   origin: WorkingFileOrigin;
   downloadUrl?: string;
 };
+
+export const WORKING_FILE_ORIGIN_LABELS: Record<WorkingFileOrigin, string> = {
+  convert: "Carried forward from Stage 1",
+  rto: "Carried forward from Stage 2",
+  insurance: "Carried forward from Stage 3",
+  upload: "Uploaded manually",
+};

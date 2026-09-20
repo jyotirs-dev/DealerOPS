@@ -13,6 +13,10 @@ type FileDropZoneProps = {
   onFilesChange: (files: File[]) => void;
 };
 
+function isSameFile(a: File, b: File): boolean {
+  return a.name === b.name && a.size === b.size && a.lastModified === b.lastModified;
+}
+
 function filterAccepted(files: File[], accept: string): File[] {
   const extensions = accept
     .split(",")
@@ -38,13 +42,25 @@ export function FileDropZone({
   onFilesChange,
 }: FileDropZoneProps) {
   const [isDraggingOver, setIsDraggingOver] = useState(false);
+  const [rejectedCount, setRejectedCount] = useState(0);
 
   function handleSelection(selected: File[]) {
     const accepted = filterAccepted(selected, accept);
+    setRejectedCount(selected.length - accepted.length);
     if (accepted.length === 0) {
       return;
     }
-    onFilesChange(multiple ? accepted : accepted.slice(0, 1));
+    if (!multiple) {
+      onFilesChange(accepted.slice(0, 1));
+      return;
+    }
+    const merged = [...files];
+    for (const file of accepted) {
+      if (!merged.some((existing) => isSameFile(existing, file))) {
+        merged.push(file);
+      }
+    }
+    onFilesChange(merged);
   }
 
   function handleDrop(event: DragEvent<HTMLDivElement>) {
@@ -87,6 +103,13 @@ export function FileDropZone({
           </label>
         </span>
         <span className="dropzone-hint">{hint}</span>
+        {rejectedCount > 0 ? (
+          <span className="dropzone-error" role="alert">
+            {rejectedCount === 1
+              ? "1 file was skipped — unsupported file type."
+              : `${rejectedCount} files were skipped — unsupported file type.`}
+          </span>
+        ) : null}
         <input
           id={id}
           name={id}

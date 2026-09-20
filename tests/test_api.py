@@ -155,7 +155,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(payload["summary"]["billsProcessed"], 2)
         self.assertEqual(payload["summary"]["billsUpdated"], 2)
         self.assertEqual(payload["reviewRows"], [])
-        self.assertTrue(payload["downloadUrl"].endswith("sales_updated.xlsx"))
+        self.assertTrue(payload["downloadUrl"].endswith("sales.xlsx"))
         self.assertTrue(payload["reviewCsvUrl"].endswith("review_conflicts.csv"))
         self.assertEqual(payload["rows"][0][1], 5400.0)
         self.assertEqual(payload["rows"][1][2], 3700.0)

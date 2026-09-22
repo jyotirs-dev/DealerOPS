@@ -477,6 +477,62 @@ class ApiTests(unittest.TestCase):
         self.assertIn("downloadUrl", payload)
         self.assertIn("manualColumns", payload)
 
+    @patch("insurance_rto_updater.orchestration.pipeline.extract_text_from_file")
+    def test_edit_cell_endpoint_writes_flagged_value_into_workbook(
+        self,
+        mocked_extract,
+    ) -> None:
+        mocked_extract.return_value = "Insured: Unknown Person\nGrand Total: 5400"
+
+        process_response = self.client.post(
+            "/api/process",
+            data={
+                "workbook": (
+                    io.BytesIO(self._workbook_bytes()),
+                    "sales.xlsx",
+                ),
+                "insurance_files": (
+                    io.BytesIO(b"insurance"),
+                    "insurance-one.pdf",
+                ),
+            },
+            content_type="multipart/form-data",
+        )
+        process_payload = process_response.get_json()
+        job_id = process_payload["jobId"]
+        workbook_filename = Path(process_payload["downloadUrl"]).name
+
+        edit_response = self.client.post(
+            f"/api/jobs/{job_id}/edit-cell",
+            json={
+                "workbookFileName": workbook_filename,
+                "rowNumber": 2,
+                "field": "insurance",
+                "value": 5400,
+            },
+        )
+
+        self.assertEqual(edit_response.status_code, 200)
+        edit_payload = edit_response.get_json()
+        self.assertEqual(edit_payload["rows"][0][1], 5400.0)
+
+        download_response = self.client.get(process_payload["downloadUrl"])
+        workbook = load_workbook(io.BytesIO(download_response.data))
+        worksheet = workbook[process_payload["sheetTitle"]]
+        self.assertEqual(worksheet.cell(row=2, column=2).value, 5400.0)
+
+    def test_edit_cell_endpoint_rejects_unknown_job(self) -> None:
+        response = self.client.post(
+            "/api/jobs/does-not-exist/edit-cell",
+            json={
+                "workbookFileName": "sales.xlsx",
+                "rowNumber": 2,
+                "field": "insurance",
+                "value": 5400,
+            },
+        )
+        self.assertEqual(response.status_code, 404)
+
     def test_generate_sales_register_endpoint_requires_file(self) -> None:
         response = self.client.post(
             "/api/generate-sales-register",

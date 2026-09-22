@@ -69,6 +69,43 @@ function processResponse(overrides: Record<string, unknown> = {}) {
   };
 }
 
+/** jsdom's Blob has no .text(), so read uploaded files the long way. */
+function readFileText(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsText(file);
+  });
+}
+
+function flaggedRtoRow() {
+  return {
+    billType: "rto",
+    billFile: "rto.pdf",
+    extractedCustomer: "Suresh Sharma",
+    extractedAmount: "3700",
+    bestScore: "",
+    candidateSalesRows: "",
+    reason: "NO_MATCH",
+  };
+}
+
+function editCellResponse() {
+  return {
+    headerRow: [
+      "Invoice No.",
+      "Contact Name",
+      "Insurance",
+      "(RTO+ Agent fee 500)",
+    ],
+    rows: [
+      ["INV-1", "Ramesh Kumar", "", 3200],
+      ["INV-2", "Suresh Sharma", "", 3700],
+    ],
+  };
+}
+
 /** Uploads a workbook on the RTO stage, which is the resume-mid-workflow path. */
 async function startAtRtoStage(user: ReturnType<typeof userEvent.setup>) {
   await user.click(screen.getByRole("button", { name: /stage 2/i }));
@@ -78,6 +115,19 @@ async function startAtRtoStage(user: ReturnType<typeof userEvent.setup>) {
   );
   await waitFor(() =>
     expect(screen.getByLabelText(/upload rto receipts/i)).toBeInTheDocument(),
+  );
+}
+
+/** Runs the RTO stage end to end and waits for its result panel. */
+async function runRtoStage(user: ReturnType<typeof userEvent.setup>) {
+  await startAtRtoStage(user);
+  await user.upload(
+    screen.getByLabelText(/upload rto receipts/i),
+    new File(["rto"], "rto.pdf", { type: "application/pdf" }),
+  );
+  await user.click(screen.getByRole("button", { name: /update rto amounts/i }));
+  await waitFor(() =>
+    expect(screen.getByText(/last run result/i)).toBeInTheDocument(),
   );
 }
 
@@ -249,10 +299,10 @@ describe("App", () => {
       "href",
       "/download/job-1/rto_updated.xlsx",
     );
-    expect(screen.getByRole("link", { name: /review csv/i })).toHaveAttribute(
-      "href",
-      "/download/job-1/review_conflicts.csv",
-    );
+    // Review rows are actionable in-stage now, so the CSV button is redundant.
+    expect(
+      screen.queryByRole("link", { name: /review csv/i }),
+    ).not.toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: /continue to stage 3/i }),
     ).toBeInTheDocument();
@@ -304,15 +354,16 @@ describe("App", () => {
     await user.click(screen.getByRole("button", { name: /update rto amounts/i }));
 
     await waitFor(() =>
-      expect(screen.getByRole("tab", { name: /review rows/i })).toHaveAttribute(
-        "aria-selected",
-        "true",
-      ),
+      expect(
+        screen.getByRole("tab", { name: /needs attention/i }),
+      ).toHaveAttribute("aria-selected", "true"),
     );
-    expect(screen.getByText("Excluded")).toBeInTheDocument();
+    expect(screen.getByText("rto-review.pdf")).toBeInTheDocument();
     expect(
       screen.getByText("No matching sales row cleared the configured threshold."),
     ).toBeInTheDocument();
+    // The known candidate row is pre-selected so the common fix is one click.
+    expect(screen.getByLabelText(/sales row/i)).toHaveValue("2");
 
     await user.click(screen.getByRole("tab", { name: /worksheet/i }));
     expect(screen.getByTestId("mock-grid")).toHaveTextContent("Ramesh Kumar");
@@ -388,7 +439,7 @@ describe("App", () => {
     expect(body.get("clear_existing")).toBe("0");
   });
 
-  it("lists every completed output in the review stage", async () => {
+  it("shows the latest completed output by default in the review stage", async () => {
     const user = userEvent.setup();
     const fetchMock = vi.mocked(fetch);
     fetchMock
@@ -418,11 +469,162 @@ describe("App", () => {
 
     await user.click(screen.getByRole("button", { name: /review & export/i }));
     expect(
-      screen.getByRole("link", { name: /download final workbook/i }),
+      screen.getByRole("link", { name: /download workbook/i }),
     ).toHaveAttribute("href", "/download/job-1/rto_updated.xlsx");
     expect(
-      screen.getByRole("button", { name: /stage 2 rto updated workbook/i }),
+      screen.getByRole("heading", { name: /rto updated workbook/i }),
     ).toBeInTheDocument();
+    // A single completed output shouldn't surface any stage-history clutter.
+    expect(
+      screen.queryByText(/view earlier stage/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it("fixes a flagged bill in the stage that produced it", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.mocked(fetch);
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => processResponse({ reviewRows: [flaggedRtoRow()] }),
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        blob: async () => new Blob(["pre-edit workbook"]),
+      } as Response);
+
+    render(<App />);
+    await runRtoStage(user);
+
+    // The flagged bill is the stage's own business — no navigation to review.
+    expect(screen.getByText("rto.pdf")).toBeInTheDocument();
+
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => editCellResponse(),
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        blob: async () => new Blob(["post-edit workbook"]),
+      } as Response);
+
+    await user.selectOptions(
+      screen.getByLabelText(/sales row/i),
+      screen.getByRole("option", { name: /row 3 — suresh sharma/i }),
+    );
+    await user.click(screen.getByRole("button", { name: /^apply$/i }));
+
+    const editCall = await waitFor(() => {
+      const call = fetchMock.mock.calls.find(
+        (entry) => entry[0] === "/api/jobs/job-1/edit-cell",
+      );
+      expect(call).toBeDefined();
+      return call;
+    });
+    expect(JSON.parse(editCall?.[1]?.body as string)).toEqual({
+      workbookFileName: "rto_updated.xlsx",
+      rowNumber: 3,
+      field: "rto",
+      value: 3700,
+    });
+
+    await waitFor(() =>
+      expect(screen.getByText(/nothing left to review/i)).toBeInTheDocument(),
+    );
+    expect(screen.queryByText("rto.pdf")).not.toBeInTheDocument();
+  });
+
+  it("deletes a flagged bill and restores it with undo", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.mocked(fetch);
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => processResponse({ reviewRows: [flaggedRtoRow()] }),
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        blob: async () => new Blob(["updated workbook"]),
+      } as Response);
+
+    render(<App />);
+    await runRtoStage(user);
+
+    await user.click(screen.getByRole("button", { name: /delete/i }));
+    expect(screen.queryByText("rto.pdf")).not.toBeInTheDocument();
+    expect(screen.getByText(/1 deleted/i)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /undo/i }));
+    expect(screen.getByText("rto.pdf")).toBeInTheDocument();
+    expect(screen.queryByText(/1 deleted/i)).not.toBeInTheDocument();
+  });
+
+  it("carries a stage fix into the workbook the next stage uploads", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.mocked(fetch);
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => processResponse({ reviewRows: [flaggedRtoRow()] }),
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        blob: async () => new Blob(["pre-edit workbook"]),
+      } as Response);
+
+    render(<App />);
+    await runRtoStage(user);
+
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => editCellResponse(),
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        blob: async () => new Blob(["post-edit workbook"]),
+      } as Response);
+
+    await user.selectOptions(
+      screen.getByLabelText(/sales row/i),
+      screen.getByRole("option", { name: /row 3 — suresh sharma/i }),
+    );
+    await user.click(screen.getByRole("button", { name: /^apply$/i }));
+    await waitFor(() =>
+      expect(screen.getByText(/nothing left to review/i)).toBeInTheDocument(),
+    );
+
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => processResponse({ jobId: "job-2" }),
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        blob: async () => new Blob(["insurance workbook"]),
+      } as Response);
+
+    await user.click(screen.getByRole("button", { name: /continue to stage 3/i }));
+    await user.upload(
+      screen.getByLabelText(/upload insurance bills/i),
+      new File(["insurance"], "insurance.pdf", { type: "application/pdf" }),
+    );
+    await user.click(
+      screen.getByRole("button", { name: /update insurance amounts/i }),
+    );
+
+    const insuranceCall = await waitFor(() => {
+      const processCalls = fetchMock.mock.calls.filter(
+        (entry) => entry[0] === "/api/process",
+      );
+      expect(processCalls).toHaveLength(2);
+      return processCalls[1];
+    });
+    const uploaded = (insuranceCall?.[1]?.body as FormData).get(
+      "workbook",
+    ) as File;
+    expect(await readFileText(uploaded)).toBe("post-edit workbook");
   });
 
   it("renders API errors", async () => {

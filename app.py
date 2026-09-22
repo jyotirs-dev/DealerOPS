@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from flask import Flask, abort, jsonify, request, send_file, send_from_directory
+from werkzeug.exceptions import NotFound
 from werkzeug.utils import secure_filename
 
 from insurance_rto_updater.integrations.local_workbook import (
@@ -362,6 +363,53 @@ def generate_sales_register_endpoint():  # type: ignore[no-untyped-def]
 
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": f"Unexpected server error: {exc}"}), 500
+
+
+@app.post("/api/jobs/<job_id>/edit-cell")
+def edit_cell(job_id: str):  # type: ignore[no-untyped-def]
+    try:
+        payload = request.get_json(silent=True) or {}
+
+        workbook_filename = str(payload.get("workbookFileName", "")).strip()
+        if not workbook_filename:
+            raise ValueError("workbookFileName is required.")
+
+        field = str(payload.get("field", "")).strip()
+        if field not in {"insurance", "rto"}:
+            raise ValueError("field must be 'insurance' or 'rto'.")
+
+        try:
+            row_index = int(payload.get("rowNumber"))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("rowNumber must be an integer.") from exc
+
+        try:
+            value = float(payload.get("value"))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("value must be numeric.") from exc
+
+        safe_filename = Path(secure_filename(workbook_filename)).name
+        workbook_path = OUTPUT_ROOT / job_id / safe_filename
+        if not workbook_path.exists():
+            abort(404)
+
+        header_name = (
+            FIXED_INSURANCE_HEADER if field == "insurance" else FIXED_RTO_HEADER
+        )
+
+        workbook_adapter = LocalWorkbookAdapter(workbook_path)
+        workbook_adapter.write_cell_by_header(row_index, header_name, value)
+        workbook_adapter.save_in_place()
+        header_row, rows = workbook_adapter.sheet_preview()
+
+        return jsonify({"headerRow": header_row, "rows": rows})
+
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except NotFound:
+        raise
     except Exception as exc:
         return jsonify({"error": f"Unexpected server error: {exc}"}), 500
 

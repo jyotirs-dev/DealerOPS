@@ -201,3 +201,32 @@ class LocalWorkbookAdapter:
         workbook = self._load()
         workbook.save(destination)
         return destination
+
+    def write_cell_by_header(
+        self,
+        row_index: int,
+        header_name: str,
+        value: float,
+    ) -> None:
+        """Write a single cell, identified by 1-based sheet row and header text."""
+        worksheet = self._resolve_worksheet()
+        header_row = self._header_row(worksheet)
+        target_key = normalize_text(header_name)
+        col_index = next(
+            (
+                idx
+                for idx, cell in enumerate(header_row, start=1)
+                if normalize_text(cell) == target_key
+            ),
+            None,
+        )
+        if col_index is None:
+            raise ValueError(f"Header not found in sheet: {header_name}")
+        if row_index < 2:
+            raise ValueError("Row index must target a data row (>= 2).")
+
+        worksheet.cell(row=row_index, column=col_index).value = value
+
+    def save_in_place(self) -> None:
+        workbook = self._load()
+        workbook.save(self.workbook_path)

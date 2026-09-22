@@ -62,6 +62,7 @@ export type SalesRegisterResponse = {
 
 export type WorkflowArtifact = {
   id: string;
+  jobId: string;
   stage: WorkflowStageId;
   displayLabel: string;
   workbookDownloadUrl: string;
@@ -72,6 +73,7 @@ export type WorkflowArtifact = {
   reviewCsvUrl?: string;
   summary?: ProcessSummary;
   reviewRows?: ReviewRow[];
+  dismissedReviewRows?: ReviewRow[];
   monthYear?: string;
   rowsWritten?: number;
   manualColumns?: string[];

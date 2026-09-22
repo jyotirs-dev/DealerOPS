@@ -1,6 +1,8 @@
+import { useState } from "react";
+
 import type { WorkflowArtifact, WorkflowStageId } from "../workflowTypes";
-import { RunResultPanel } from "./RunResultPanel";
-import { DownloadIcon } from "./icons";
+import { ReviewExportPanel } from "./ReviewExportPanel";
+import { AlertIcon } from "./icons";
 
 const STAGE_BADGES: Record<WorkflowStageId, string> = {
   convert: "Stage 1",
@@ -12,21 +14,24 @@ type ReviewWorkspaceProps = {
   artifacts: WorkflowArtifact[];
   selectedArtifactId: string | null;
   onSelectArtifact: (artifactId: string) => void;
+  onOpenStage: (stage: WorkflowStageId) => void;
 };
 
 export function ReviewWorkspace({
   artifacts,
   selectedArtifactId,
   onSelectArtifact,
+  onOpenStage,
 }: ReviewWorkspaceProps) {
+  const [isHistoryOpen, setIsHistoryOpen] = useState(false);
+
   const orderedArtifacts = [...artifacts].sort(
     (left, right) => right.completedOrder - left.completedOrder,
   );
+  const latestArtifact = orderedArtifacts[0] ?? null;
   const selectedArtifact =
     orderedArtifacts.find((artifact) => artifact.id === selectedArtifactId)
-    ?? orderedArtifacts[0]
-    ?? null;
-  const latestArtifact = orderedArtifacts[0] ?? null;
+    ?? latestArtifact;
 
   if (!selectedArtifact || !latestArtifact) {
     return (
@@ -37,54 +42,71 @@ export function ReviewWorkspace({
     );
   }
 
+  const unresolved = orderedArtifacts
+    .filter((artifact) => (artifact.reviewRows?.length ?? 0) > 0)
+    .map((artifact) => ({
+      stage: artifact.stage,
+      count: artifact.reviewRows?.length ?? 0,
+    }));
+
   return (
-    <div className="review-layout">
-      <div className="artifact-history">
-        {orderedArtifacts.map((artifact) => (
+    <div className="review-workspace">
+      {unresolved.map((entry) => (
+        <p className="unresolved-note" key={entry.stage}>
+          <AlertIcon size={12} />
+          {entry.count} item{entry.count === 1 ? "" : "s"} left unresolved in{" "}
+          {STAGE_BADGES[entry.stage]}.
           <button
-            key={artifact.id}
             type="button"
-            className={
-              selectedArtifact.id === artifact.id
-                ? "artifact-card active"
-                : "artifact-card"
-            }
-            aria-pressed={selectedArtifact.id === artifact.id}
-            onClick={() => onSelectArtifact(artifact.id)}
+            className="link-button"
+            onClick={() => onOpenStage(entry.stage)}
           >
-            <span className="artifact-card-topline">
-              <span className="artifact-stage-badge">
-                {STAGE_BADGES[artifact.stage]}
-              </span>
-              <strong>{artifact.displayLabel}</strong>
-            </span>
-            <span className="artifact-file-name">
-              {artifact.workbookFileName}
-            </span>
-            {artifact.reviewRows?.length ? (
-              <span className="artifact-review-note">
-                {artifact.reviewRows.length} flagged for review
-              </span>
-            ) : null}
+            {entry.count === 1 ? "Go fix it" : "Go fix them"}
           </button>
-        ))}
+        </p>
+      ))}
 
-        <div className="final-export">
-          <strong>Final export</strong>
-          <a className="success-button" href={latestArtifact.workbookDownloadUrl}>
-            <DownloadIcon size={14} />
-            Download final workbook
-          </a>
-          <span className="process-note">
-            Latest output: {latestArtifact.workbookFileName}
-          </span>
+      {orderedArtifacts.length > 1 ? (
+        <div className="history-toggle-row">
+          <button
+            type="button"
+            className="history-toggle-link"
+            onClick={() => setIsHistoryOpen((open) => !open)}
+          >
+            {selectedArtifact.id === latestArtifact.id
+              ? "Viewing latest output"
+              : `Viewing ${selectedArtifact.displayLabel}`}
+            {" · view earlier stage "}
+            {isHistoryOpen ? "▲" : "▾"}
+          </button>
+
+          {isHistoryOpen ? (
+            <div className="history-pill-row">
+              {orderedArtifacts.map((artifact) => (
+                <button
+                  key={artifact.id}
+                  type="button"
+                  className={
+                    selectedArtifact.id === artifact.id
+                      ? "history-pill active"
+                      : "history-pill"
+                  }
+                  onClick={() => {
+                    onSelectArtifact(artifact.id);
+                    setIsHistoryOpen(false);
+                  }}
+                >
+                  {STAGE_BADGES[artifact.stage]} · {artifact.displayLabel}
+                </button>
+              ))}
+            </div>
+          ) : null}
         </div>
-      </div>
+      ) : null}
 
-      <RunResultPanel
+      <ReviewExportPanel
         key={selectedArtifact.id}
         artifact={selectedArtifact}
-        title={selectedArtifact.displayLabel}
       />
     </div>
   );

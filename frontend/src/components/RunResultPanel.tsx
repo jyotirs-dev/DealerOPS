@@ -1,132 +1,15 @@
 import { useState } from "react";
 import { AgGridReact } from "ag-grid-react";
-import type { ColDef } from "ag-grid-community";
 
 import type {
   PreviewMode,
   ReviewRow,
   WorkflowArtifact,
 } from "../workflowTypes";
-import { AlertIcon, ArrowRightIcon, DownloadIcon } from "./icons";
-
-type GridRow = Record<string, string | number | boolean | null>;
-
-const REVIEW_REASON_COPY: Record<string, string> = {
-  NO_MATCH: "No matching sales row cleared the configured threshold.",
-  MULTIPLE_SALES_ROWS: "Multiple sales rows matched the extracted customer.",
-  MULTIPLE_BILLS_FOR_ROW_TYPE:
-    "Multiple bills claimed the same sales row for this bill type.",
-  EXISTING_TARGET_VALUE:
-    "An existing Insurance / RTO value was preserved because Clear existing was off.",
-};
-
-function buildGridModel(preview: WorkflowArtifact["workbookPreview"]): {
-  columnDefs: ColDef<GridRow>[];
-  rowData: GridRow[];
-} {
-  if (!preview) {
-    return { columnDefs: [], rowData: [] };
-  }
-
-  const columnDefs: ColDef<GridRow>[] = [
-    {
-      headerName: "#",
-      field: "__rowNumber",
-      width: 90,
-      pinned: "left",
-      sortable: false,
-      filter: false,
-      suppressMovable: true,
-      cellClass: "row-number-cell",
-    },
-    ...preview.headerRow.map((header, index) => ({
-      field: `col_${index}`,
-      headerName: header || `Column ${index + 1}`,
-      sortable: true,
-      filter: true,
-      resizable: true,
-      flex: 1,
-      minWidth: 180,
-      tooltipField: `col_${index}`,
-    })),
-  ];
-
-  const rowData = preview.rows.map((row, rowIndex) => {
-    const record: GridRow = { __rowNumber: rowIndex + 2 };
-    preview.headerRow.forEach((_, index) => {
-      record[`col_${index}`] = row[index] ?? "";
-    });
-    return record;
-  });
-
-  return { columnDefs, rowData };
-}
-
-function formatReviewReasonSegment(reason: string): string {
-  const trimmedReason = reason.trim();
-  if (!trimmedReason) {
-    return "";
-  }
-  if (trimmedReason in REVIEW_REASON_COPY) {
-    return REVIEW_REASON_COPY[trimmedReason];
-  }
-  if (trimmedReason.startsWith("TEXT_EXTRACTION_ERROR:")) {
-    return trimmedReason.replace(
-      "TEXT_EXTRACTION_ERROR:",
-      "Text extraction failed:",
-    );
-  }
-  return trimmedReason;
-}
-
-function formatReviewReason(reason: string): string {
-  return reason
-    .split(";")
-    .map((part) => formatReviewReasonSegment(part))
-    .filter(Boolean)
-    .join("; ");
-}
-
-function ReviewTable({ reviewRows }: { reviewRows: ReviewRow[] }) {
-  return (
-    <div className="review-screen">
-      <p className="review-intro">
-        These bills were excluded from the automatic update because the match
-        could not be confirmed confidently, or an existing value was preserved.
-      </p>
-      <div className="review-table-shell">
-        <table className="review-table">
-          <thead>
-            <tr>
-              <th scope="col">Bill</th>
-              <th scope="col">Type</th>
-              <th scope="col">Extracted customer</th>
-              <th scope="col">Amount</th>
-              <th scope="col">Status</th>
-              <th scope="col">Reason</th>
-              <th scope="col">Candidates</th>
-            </tr>
-          </thead>
-          <tbody>
-            {reviewRows.map((row) => (
-              <tr key={`${row.billType}-${row.billFile}-${row.reason}`}>
-                <td className="review-cell-strong">{row.billFile}</td>
-                <td>{row.billType}</td>
-                <td>{row.extractedCustomer || "Not found"}</td>
-                <td>{row.extractedAmount || "Not found"}</td>
-                <td>
-                  <span className="review-status-pill">Excluded</span>
-                </td>
-                <td>{formatReviewReason(row.reason)}</td>
-                <td>{row.candidateSalesRows || row.bestScore || "None"}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
+import { buildGridModel } from "../lib/gridModel";
+import type { GridRow } from "../lib/gridModel";
+import { NeedsAttentionList } from "./NeedsAttentionList";
+import { AlertIcon, ArrowRightIcon, CheckIcon, DownloadIcon } from "./icons";
 
 type RunResultPanelProps = {
   artifact: WorkflowArtifact;
@@ -134,6 +17,14 @@ type RunResultPanelProps = {
   compact?: boolean;
   continueLabel?: string;
   onContinue?: () => void;
+  onApplyManualEdit?: (
+    artifactId: string,
+    reviewRow: ReviewRow,
+    rowNumber: number,
+    value: number,
+  ) => Promise<void>;
+  onDismissReviewRow?: (artifactId: string, reviewRow: ReviewRow) => void;
+  onUndoDismiss?: (artifactId: string) => void;
 };
 
 export function RunResultPanel({
@@ -142,13 +33,25 @@ export function RunResultPanel({
   compact = false,
   continueLabel,
   onContinue,
+  onApplyManualEdit,
+  onDismissReviewRow,
+  onUndoDismiss,
 }: RunResultPanelProps) {
   const reviewRows = artifact.reviewRows ?? [];
+  const dismissedCount = artifact.dismissedReviewRows?.length ?? 0;
   const hasReviewRows = reviewRows.length > 0;
+  const isEditable = Boolean(
+    onApplyManualEdit && onDismissReviewRow && onUndoDismiss,
+  );
+  // Captured on mount (the panel is keyed per run) so that clearing the last
+  // row lands on the "all clear" confirmation instead of the tab vanishing.
+  const [startedFlagged] = useState(hasReviewRows);
+  const showAttentionTab = isEditable && (startedFlagged || dismissedCount > 0);
   const [previewMode, setPreviewMode] = useState<PreviewMode>(
     hasReviewRows ? "review" : "worksheet",
   );
   const { columnDefs, rowData } = buildGridModel(artifact.workbookPreview);
+  const activeMode = showAttentionTab ? previewMode : "worksheet";
 
   return (
     <section className="result-panel">
@@ -157,18 +60,10 @@ export function RunResultPanel({
           <span className={hasReviewRows ? "result-dot warning" : "result-dot"} />
           <h2>{title}</h2>
         </div>
-        <div className="result-panel-downloads">
-          <a className="ghost-button" href={artifact.workbookDownloadUrl}>
-            <DownloadIcon />
-            Workbook
-          </a>
-          {artifact.reviewCsvUrl ? (
-            <a className="ghost-button" href={artifact.reviewCsvUrl}>
-              <DownloadIcon />
-              Review CSV
-            </a>
-          ) : null}
-        </div>
+        <a className="ghost-button" href={artifact.workbookDownloadUrl}>
+          <DownloadIcon />
+          Workbook
+        </a>
       </header>
 
       {artifact.summary ? (
@@ -186,14 +81,10 @@ export function RunResultPanel({
             <strong>{artifact.summary.rowsUpdated}</strong>
           </article>
           <article
-            className={
-              artifact.summary.billsReview > 0
-                ? "stat-tile warning"
-                : "stat-tile"
-            }
+            className={hasReviewRows ? "stat-tile warning" : "stat-tile"}
           >
-            <span>Flagged for review</span>
-            <strong>{artifact.summary.billsReview}</strong>
+            <span>Needs attention</span>
+            <strong>{reviewRows.length}</strong>
           </article>
         </div>
       ) : null}
@@ -239,7 +130,7 @@ export function RunResultPanel({
           <span>Source: {artifact.sourceWorkbookFileName}</span>
         </div>
 
-        {hasReviewRows ? (
+        {showAttentionTab ? (
           <div
             className="preview-switcher"
             role="tablist"
@@ -248,9 +139,9 @@ export function RunResultPanel({
             <button
               type="button"
               role="tab"
-              aria-selected={previewMode === "worksheet"}
+              aria-selected={activeMode === "worksheet"}
               className={
-                previewMode === "worksheet"
+                activeMode === "worksheet"
                   ? "preview-toggle active"
                   : "preview-toggle"
               }
@@ -261,16 +152,27 @@ export function RunResultPanel({
             <button
               type="button"
               role="tab"
-              aria-selected={previewMode === "review"}
+              aria-selected={activeMode === "review"}
               className={
-                previewMode === "review"
-                  ? "preview-toggle active warning"
+                activeMode === "review"
+                  ? hasReviewRows
+                    ? "preview-toggle active warning"
+                    : "preview-toggle active"
                   : "preview-toggle"
               }
               onClick={() => setPreviewMode("review")}
             >
-              <AlertIcon size={12} />
-              Review rows ({reviewRows.length})
+              {hasReviewRows ? (
+                <>
+                  <AlertIcon size={12} />
+                  Needs attention ({reviewRows.length})
+                </>
+              ) : (
+                <>
+                  <CheckIcon size={12} />
+                  All clear
+                </>
+              )}
             </button>
           </div>
         ) : null}
@@ -278,10 +180,19 @@ export function RunResultPanel({
 
       <div
         className={compact ? "grid-shell compact" : "grid-shell"}
-        aria-label={previewMode === "review" ? "review rows" : "sheet preview"}
+        aria-label={activeMode === "review" ? "review rows" : "sheet preview"}
       >
-        {previewMode === "review" && hasReviewRows ? (
-          <ReviewTable reviewRows={reviewRows} />
+        {activeMode === "review" && isEditable ? (
+          <NeedsAttentionList
+            artifact={artifact}
+            onApply={(reviewRow, rowNumber, value) =>
+              onApplyManualEdit!(artifact.id, reviewRow, rowNumber, value)
+            }
+            onDismiss={(reviewRow) =>
+              onDismissReviewRow!(artifact.id, reviewRow)
+            }
+            onUndoDismiss={() => onUndoDismiss!(artifact.id)}
+          />
         ) : artifact.workbookPreview ? (
           <div className="ag-theme-quartz grid-theme">
             <AgGridReact<GridRow>
@@ -305,8 +216,8 @@ export function RunResultPanel({
         <footer className="result-panel-footer">
           <span className="process-note">
             {hasReviewRows
-              ? `${reviewRows.length} bill${reviewRows.length === 1 ? "" : "s"} need a manual look before you continue.`
-              : "Everything matched cleanly."}
+              ? `${reviewRows.length} bill${reviewRows.length === 1 ? " still needs" : "s still need"} attention — fix or delete for a clean start.`
+              : "Everything in this stage is resolved."}
           </span>
           <button type="button" className="primary-button" onClick={onContinue}>
             {continueLabel}

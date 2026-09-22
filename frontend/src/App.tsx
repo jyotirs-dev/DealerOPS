@@ -18,6 +18,7 @@ import {
 } from "./components/ExtractionSettingsDrawer";
 import type {
   ProcessResponse,
+  ReviewRow,
   SalesRegisterResponse,
   Settings,
   UpdateStageId,
@@ -56,7 +57,7 @@ const STAGE_COPY: Record<
     eyebrow: "All outputs",
     title: "Review & export",
     description:
-      "Every completed stage stays here as a downloadable output. Compare results, check flagged rows, and export the final workbook.",
+      "The finished workbook, ready to download. Flagged bills are handled in the stage that produced them, so there is nothing left to resolve here.",
     railLabel: "Review & Export",
   },
 };
@@ -236,6 +237,7 @@ export default function App() {
       const completedOrder = nextCompletedOrder(artifacts);
       const artifact: WorkflowArtifact = {
         id: `convert-${completedOrder}`,
+        jobId: result.jobId,
         stage: "convert",
         displayLabel: "Generated workbook",
         workbookDownloadUrl: result.downloadUrl,
@@ -324,6 +326,7 @@ export default function App() {
       const completedOrder = nextCompletedOrder(artifacts);
       const artifact: WorkflowArtifact = {
         id: `${stageId}-${completedOrder}`,
+        jobId: result.jobId,
         stage: stageId,
         displayLabel: isRto
           ? "RTO updated workbook"
@@ -362,6 +365,109 @@ export default function App() {
     } finally {
       setProcessing(false);
     }
+  }
+
+  async function handleApplyManualEdit(
+    artifactId: string,
+    reviewRow: ReviewRow,
+    rowNumber: number,
+    value: number,
+  ) {
+    const artifact = artifacts.find((entry) => entry.id === artifactId);
+    if (!artifact) {
+      return;
+    }
+
+    const response = await fetch(
+      `/api/jobs/${artifact.jobId}/edit-cell`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          workbookFileName: artifact.workbookFileName,
+          rowNumber,
+          field: reviewRow.billType,
+          value,
+        }),
+      },
+    );
+    const payload = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new Error(payload?.error ?? "Failed to apply the edit.");
+    }
+
+    // Later stages upload the working file, so it has to be re-pulled here or
+    // the fix just made would be overwritten by the pre-edit copy.
+    const refreshed = await hydrateDownloadedWorkbook(
+      `${artifact.workbookDownloadUrl}?edited=${Date.now()}`,
+      artifact.workbookFileName,
+      {
+        fileName: artifact.workbookFileName,
+        sheetTitle: artifact.workbookPreview?.sheetTitle ?? "",
+        headerRow: payload.headerRow,
+        rows: payload.rows,
+      },
+    );
+
+    setArtifacts((current) =>
+      current.map((entry) =>
+        entry.id === artifactId
+          ? {
+              ...entry,
+              workbookFile: refreshed.file,
+              workbookPreview: refreshed.preview,
+              reviewRows: (entry.reviewRows ?? []).filter(
+                (row) => row !== reviewRow,
+              ),
+            }
+          : entry,
+      ),
+    );
+
+    setWorkingFile((current) =>
+      current && current.downloadUrl === artifact.workbookDownloadUrl
+        ? { ...current, file: refreshed.file, preview: refreshed.preview }
+        : current,
+    );
+  }
+
+  function handleDismissReviewRow(artifactId: string, reviewRow: ReviewRow) {
+    setArtifacts((current) =>
+      current.map((entry) =>
+        entry.id === artifactId
+          ? {
+              ...entry,
+              reviewRows: (entry.reviewRows ?? []).filter(
+                (row) => row !== reviewRow,
+              ),
+              dismissedReviewRows: [
+                ...(entry.dismissedReviewRows ?? []),
+                reviewRow,
+              ],
+            }
+          : entry,
+      ),
+    );
+  }
+
+  function handleUndoDismiss(artifactId: string) {
+    setArtifacts((current) =>
+      current.map((entry) => {
+        if (entry.id !== artifactId) {
+          return entry;
+        }
+        const dismissed = entry.dismissedReviewRows ?? [];
+        const restored = dismissed[dismissed.length - 1];
+        if (!restored) {
+          return entry;
+        }
+        return {
+          ...entry,
+          reviewRows: [...(entry.reviewRows ?? []), restored],
+          dismissedReviewRows: dismissed.slice(0, -1),
+        };
+      }),
+    );
   }
 
   function buildUpdateStage(stageId: UpdateStageId): StepperStage {
@@ -521,6 +627,9 @@ export default function App() {
             compact
             continueLabel={CONTINUE_LABELS[stageId]}
             onContinue={() => setActiveStage(STAGE_NEXT_TAB[stageId])}
+            onApplyManualEdit={handleApplyManualEdit}
+            onDismissReviewRow={handleDismissReviewRow}
+            onUndoDismiss={handleUndoDismiss}
           />
         ) : null}
       </>
@@ -581,6 +690,7 @@ export default function App() {
             artifacts={artifacts}
             selectedArtifactId={selectedArtifactId}
             onSelectArtifact={setSelectedArtifactId}
+            onOpenStage={setActiveStage}
           />
         ) : null}
       </main>
